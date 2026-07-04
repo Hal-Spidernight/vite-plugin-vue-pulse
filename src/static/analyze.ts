@@ -50,8 +50,11 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): ReactivityGra
   const desc: AnyNode = parseSfc(source, { filename });
   // Analyze BOTH <script setup> and a plain <script> (defineOptions/name pattern).
   const parts = [desc?.scriptSetup?.content, desc?.script?.content].filter(Boolean) as string[];
-  const componentLabel = `<${String(filename).split('/').pop()!.replace(/\.\w+$/, '')}>`;
-  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, componentLabel });
+  // Component name = filename basename without extension. This MUST match the
+  // runtime scope (Vue sets `inst.type.__name` to the same), so static and runtime
+  // nodes reconcile instead of duplicating.
+  const name = String(filename).split('/').pop()!.replace(/\.\w+$/, '');
+  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, componentLabel: `<${name}>`, scope: name });
 }
 
 export interface AnalyzeOptions {
@@ -59,6 +62,8 @@ export interface AnalyzeOptions {
   template?: string;
   /** label for the component render node (defaults to a generic name) */
   componentLabel?: string;
+  /** component name used to scope node keys (matches the runtime's `inst.type.__name`) */
+  scope?: string;
 }
 
 export function analyzeScript(code: string, opts: AnalyzeOptions = {}): ReactivityGraphExport {
@@ -67,9 +72,12 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
   const bindings = new Map<string, Binding>();
   const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static' }> = [];
   const edges = new Map<string, { from: string; to: string; key?: string; origin: 'static'; kind: EdgeKind }>();
-  let anon = 0;
+  // per-kind counters for anonymous watch/watchEffect — order-index labels match
+  // the build-time transform's, so static and runtime effects reconcile.
+  let anonWatch = 0, anonWatchEffect = 0;
 
-  const nodeId = (label: string) => `static:${label}`;
+  const scopePrefix = opts.scope ? `${opts.scope}::` : '';
+  const nodeId = (label: string) => `static:${scopePrefix}${label}`;
   const addNode = (label: string, kind: string): string => {
     if (!nodes.find((n) => n.id === nodeId(label))) {
       nodes.push({ id: nodeId(label), label, kind: kind as NodeKind, origin: 'static' });
@@ -146,17 +154,19 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
     }
   }
 
-  // watch / watchEffect calls (anywhere)
-  walk(ast, (node: AnyNode) => {
+  // watch / watchEffect calls (anywhere). Labels: explicit string arg > assigned
+  // variable name > order-index (`watch#1` / `watchEffect#1`) — the same scheme the
+  // build-time transform uses, so anonymous effects reconcile static<->runtime.
+  walk(ast, (node: AnyNode, parent: AnyNode) => {
     if (node.type !== 'CallExpression') return;
     const name = calleeName(node.callee);
     if (name && WATCHEFFECT_NAMES.has(name)) {
-      const label = stringArg(node.arguments[1]) || `watchEffect@L${lineOf(code, node.start) || ++anon}`;
+      const label = stringArg(node.arguments[1]) || effectVarName(parent, node) || `watchEffect#${++anonWatchEffect}`;
       const toId = addNode(label, 'watchEffect');
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
       for (const w of writesIn(node.arguments[0], bindings)) addEdge(label, nodeId(w.label), w.key, 'write');
     } else if (name && WATCH_NAMES.has(name)) {
-      const label = stringArg(node.arguments[3]) || `watch@L${lineOf(code, node.start) || ++anon}`;
+      const label = stringArg(node.arguments[3]) || effectVarName(parent, node) || `watch#${++anonWatch}`;
       const toId = addNode(label, 'watch');
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
       for (const w of writesIn(node.arguments[1], bindings)) addEdge(label, nodeId(w.label), w.key, 'write');
@@ -166,13 +176,18 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
   // ---- template pass: reads in <template> feed the component render effect ---
   if (opts.template) {
     const compLabel = opts.componentLabel || '<Component>';
+    // reconcile with the runtime render node, which is keyed `component::<Name>`
+    const componentNodeId = opts.scope ? `static:component::${opts.scope}` : `static:${compLabel}`;
     let created = false;
     for (const expr of templateExpressions(opts.template)) {
       let sub: AnyNode;
       try { sub = parseModule(`(${expr});`); } catch { continue; }
       for (const dep of readsIn(sub, bindings)) {
-        if (!created) { addNode(compLabel, 'component'); created = true; }
-        addEdge(dep.label, nodeId(compLabel), dep.key);
+        if (!created) {
+          if (!nodes.find((n) => n.id === componentNodeId)) nodes.push({ id: componentNodeId, label: compLabel, kind: 'component', origin: 'static' });
+          created = true;
+        }
+        addEdge(dep.label, componentNodeId, dep.key);
       }
     }
   }
@@ -188,6 +203,12 @@ function calleeName(callee: AnyNode): string | null {
 
 function stringArg(node: AnyNode): string | null {
   return node && node.type === 'Literal' && typeof node.value === 'string' ? node.value : null;
+}
+
+/** For `const stop = watch(...)`, the assigned variable name (matches the transform's label). */
+function effectVarName(parent: AnyNode, node: AnyNode): string | undefined {
+  if (parent && parent.type === 'VariableDeclarator' && parent.init === node && parent.id?.type === 'Identifier') return parent.id.name;
+  return undefined;
 }
 
 /**

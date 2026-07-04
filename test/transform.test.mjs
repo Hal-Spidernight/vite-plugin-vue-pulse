@@ -32,8 +32,8 @@ const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.e
 ok(changed, 'transform reported changes');
 ok(code.includes('__RG.tracedRef(\'Ada\', "first")') || code.includes('__RG.tracedRef("Ada", "first")') || /__RG\.tracedRef\('Ada', "first"\)/.test(code), 'ref -> tracedRef with inferred label "first"');
 ok(/__RG\.tracedComputed\(.*, "fullName"\)/.test(code), 'computed -> tracedComputed label "fullName"');
-ok(/__RG\.tracedWatch\(fullName, .*, \{\}, "watch@L\d+"\)/.test(code), 'watch -> tracedWatch with padded options + positional label');
-ok(/__RG\.tracedWatchEffect\(.*, "watchEffect@L\d+"\)/.test(code), 'watchEffect -> tracedWatchEffect with label');
+ok(/__RG\.tracedWatch\(fullName, .*, \{\}, "watch#\d+"\)/.test(code), 'watch -> tracedWatch with padded options + order-index label');
+ok(/__RG\.tracedWatchEffect\(.*, "watchEffect#\d+"\)/.test(code), 'watchEffect -> tracedWatchEffect with order-index label');
 
 // Now RUN the transformed code and confirm the graph actually builds.
 writeFileSync(transformedPath, code);
@@ -51,8 +51,8 @@ const has = (f, t) => edges.includes(`${f}->${t}`);
 ok(has('first', 'fullName'), 'first -> fullName (from transformed plain code)');
 ok(has('last', 'fullName'), 'last -> fullName');
 ok(has('cart', 'total'), 'cart -> total');
-ok(edges.some((e) => e.startsWith('fullName->watch@')), 'fullName -> watch (source dep)');
-ok([...graph.edges.values()].some((e) => e.kind === 'write' && L(e.from).startsWith('watch@') && L(e.to) === 'mirror'), 'watch callback write: watch -> mirror');
+ok(edges.some((e) => e.startsWith('fullName->watch#')), 'fullName -> watch (source dep)');
+ok([...graph.edges.values()].some((e) => e.kind === 'write' && L(e.from).startsWith('watch#') && L(e.to) === 'mirror'), 'watch callback write: watch -> mirror');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

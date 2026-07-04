@@ -61,12 +61,15 @@ export function transformReactivity(code: string, _filename = 'anon.js', opts: {
 
   // 2. Collect edits (rename callee + insert label arg).
   const edits: Array<{ start: number; end: number; text: string }> = [];
+  // per-kind counters for anonymous watch/watchEffect — order-index labels match
+  // the static analyzer's, so anonymous effects reconcile static<->runtime.
+  const anon = { watch: 0, watchEffect: 0 };
   walk(program, (node: AnyNode, parent: AnyNode) => {
     if (node.type !== 'CallExpression' || node.callee.type !== 'Identifier') return;
     const canonical = factories.get(node.callee.name);
     if (!canonical) return;
 
-    const label = inferLabel(node, parent, canonical, code);
+    const label = inferLabel(node, parent, canonical, code, anon);
     const q = JSON.stringify(label);
 
     edits.push({ start: node.callee.start, end: node.callee.end, text: `__RG.${TRACED[canonical]}` });
@@ -93,13 +96,16 @@ export function transformReactivity(code: string, _filename = 'anon.js', opts: {
   return { code: out, changed: true };
 }
 
-function inferLabel(node: AnyNode, parent: AnyNode, canonical: string, code: string): string {
+function inferLabel(node: AnyNode, parent: AnyNode, canonical: string, code: string, anon: { watch: number; watchEffect: number }): string {
   if (parent && parent.type === 'VariableDeclarator' && parent.init === node && parent.id.type === 'Identifier') {
     return parent.id.name;
   }
   if (parent && parent.type === 'Property' && parent.value === node && parent.key && parent.key.type === 'Identifier') {
     return parent.key.name;
   }
+  // anonymous watch/watchEffect: order-index (matches the static analyzer)
+  if (canonical === 'watch') return `watch#${++anon.watch}`;
+  if (WATCHEFFECTS.has(canonical)) return `watchEffect#${++anon.watchEffect}`;
   return `${canonical}@L${lineOf(code, node.start)}`;
 }
 

@@ -20,7 +20,8 @@ ok(/export const staticGraph =/.test(loaded), 'load() emits staticGraph export')
 const json = JSON.parse(loaded.match(/staticGraph = (\{.*\});/s)[1]);
 console.log('  static nodes:', json.nodes.map((n) => n.label).join(', '));
 ok(json.nodes.length >= 10, `static graph has nodes (${json.nodes.length})`);
-ok(json.edges.some((e) => e.from === 'static:first' && e.to === 'static:fullName'), 'edge first->fullName present');
+// node ids are component-scoped (static:<Comp>::<label>) so static/runtime reconcile
+ok(json.edges.some((e) => e.from === 'static:App::first' && e.to === 'static:App::fullName'), 'edge first->fullName present (component-scoped ids)');
 
 // transform() injects the panel into the entry
 const out = plugin.transform('createApp()', root + '/src/main.ts');

@@ -27,7 +27,9 @@ export type { ReactivityGraphPluginOptions } from './component-plugin.js';
  * Runtime discovery will later confirm/animate them.
  */
 export function loadStaticGraph(data: Partial<ReactivityGraphExport>): void {
-  for (const n of data.nodes || []) graph.addNode(n.id, n.label, n.kind, 'static');
+  // Index each static node by its scoped key (id minus the `static:` prefix) so the
+  // runtime tracer's claimId(`Comp::label`) reconciles onto it instead of duplicating.
+  for (const n of data.nodes || []) graph.addNode(n.id, n.label, n.kind, 'static', n.id.replace(/^static:/, ''));
   for (const e of data.edges || []) graph.addEdge(e.from, e.to, e.key, 'static', e.kind ?? 'read');
 }
 

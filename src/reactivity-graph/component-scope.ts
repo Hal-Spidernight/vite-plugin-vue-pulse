@@ -33,8 +33,11 @@ export function ensureComponentNode(inst: any): string {
   const cached = nodeFor.get(inst);
   if (cached) return cached;
   const name = compName(inst);
-  const id = `component:${name}#${inst.uid}`;
-  graph.addNode(id, `<${name}>`, 'component', 'runtime', `component::${name}`);
+  const key = `component::${name}`;
+  // reuse the static map's render node (or another instance's) so we don't
+  // duplicate; refcount in the graph handles multi-instance teardown.
+  const id = graph.claimId(key) || `component:${name}#${inst.uid}`;
+  graph.addNode(id, `<${name}>`, 'component', 'runtime', key);
   nodeFor.set(inst, id);
 
   if (inst.parent) graph.addEdge(ensureComponentNode(inst.parent), id, undefined, 'runtime', 'read');
