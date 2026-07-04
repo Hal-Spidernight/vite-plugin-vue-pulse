@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Canvas overlay: force-directed reactivity graph with glowing nodes and
  * propagation pulses. Zero external dependencies (self-contained force sim +
@@ -6,28 +5,41 @@
  * page.
  *
  * Subscribe model: it listens to the shared `graph` store's events —
- *   node  -> add a body to the sim
- *   edge  -> add a spring
- *   glow  -> flash the node
- *   pulse -> send a travelling dot along the edge
+ *   node        -> add a body to the sim
+ *   edge        -> add a spring
+ *   glow        -> flash the node
+ *   pulse       -> send a travelling dot along the edge
+ *   remove-node -> drop the body (+ incident springs)
+ *   remove-edge -> drop the spring
  */
+import type { ReactivityGraph, GraphNode, GraphEdge, NodeKind } from './graph.js';
 
-const KIND_STYLE = {
+interface KindStyle { color: string; ring: string; label: string }
+
+const KIND_STYLE: Record<NodeKind, KindStyle> = {
   ref:         { color: '#38bdf8', ring: '#7dd3fc', label: 'ref' },
   reactive:    { color: '#a78bfa', ring: '#c4b5fd', label: 'reactive' },
   computed:    { color: '#34d399', ring: '#6ee7b7', label: 'computed' },
   watch:       { color: '#fbbf24', ring: '#fcd34d', label: 'watch' },
   watchEffect: { color: '#fb7185', ring: '#fda4af', label: 'watchEffect' },
+  component:   { color: '#f472b6', ring: '#f9a8d4', label: 'component (render)' },
 };
 
-/**
- * @param {import('./graph.js').ReactivityGraph} graph
- * @param {{ container?: HTMLElement, width?: number, height?: number }} [opts]
- */
-export function mountOverlay(graph, opts = {}) {
+interface Body { id: string; label: string; kind: NodeKind; x: number; y: number; vx: number; vy: number; glow: number }
+type Spring = GraphEdge;
+interface Pulse { from: string; to: string; t: number }
+
+export interface OverlayHandle {
+  canvas: HTMLCanvasElement;
+  pause(): void;
+  resume(): void;
+  destroy(): void;
+}
+
+export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLElement; width?: number; height?: number } = {}): OverlayHandle {
   const host = opts.container || document.body;
   const canvas = document.createElement('canvas');
-  const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
   const state = { w: opts.width || host.clientWidth || 720, h: opts.height || host.clientHeight || 480 };
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -45,16 +57,14 @@ export function mountOverlay(graph, opts = {}) {
   size();
   window.addEventListener('resize', size);
 
-  /** @type {Map<string, any>} */
-  const bodies = new Map();
-  /** @type {Array<any>} */
-  const springs = [];
-  /** @type {Array<any>} */
-  const pulses = [];
+  const bodies = new Map<string, Body>();
+  const springs: Spring[] = [];
+  const pulses: Pulse[] = [];
 
-  function ensureBody(node) {
-    if (bodies.has(node.id)) return bodies.get(node.id);
-    const b = {
+  function ensureBody(node: GraphNode): Body {
+    const found = bodies.get(node.id);
+    if (found) return found;
+    const b: Body = {
       id: node.id, label: node.label, kind: node.kind,
       x: state.w / 2 + (Math.random() - 0.5) * 160,
       y: state.h / 2 + (Math.random() - 0.5) * 160,
@@ -71,8 +81,17 @@ export function mountOverlay(graph, opts = {}) {
     if (ev.type === 'node' && ev.node) ensureBody(ev.node);
     else if (ev.type === 'edge' && ev.edge) springs.push({ ...ev.edge });
     else if (ev.type === 'glow' && ev.nodeId) { const b = bodies.get(ev.nodeId); if (b) b.glow = 1; }
-    else if (ev.type === 'pulse') pulses.push({ from: ev.from, to: ev.to, t: 0 });
-    else if (ev.type === 'reset') { bodies.clear(); springs.length = 0; pulses.length = 0; }
+    else if (ev.type === 'pulse') pulses.push({ from: ev.from!, to: ev.to!, t: 0 });
+    else if (ev.type === 'remove-node' && ev.nodeId) {
+      bodies.delete(ev.nodeId);
+      for (let i = springs.length - 1; i >= 0; i--) if (springs[i].from === ev.nodeId || springs[i].to === ev.nodeId) springs.splice(i, 1);
+    } else if (ev.type === 'remove-edge' && ev.edge) {
+      const e = ev.edge;
+      for (let i = springs.length - 1; i >= 0; i--) {
+        const s = springs[i];
+        if (s.from === e.from && s.to === e.to && s.key === e.key && s.kind === e.kind) { springs.splice(i, 1); break; }
+      }
+    } else if (ev.type === 'reset') { bodies.clear(); springs.length = 0; pulses.length = 0; }
   });
 
   // ---- force simulation -------------------------------------------------
@@ -80,16 +99,15 @@ export function mountOverlay(graph, opts = {}) {
     const arr = [...bodies.values()];
     const cx = state.w / 2, cy = state.h / 2;
     for (const b of arr) {
-      // gentle centering
-      b.vx += (cx - b.x) * 0.0015;
+      b.vx += (cx - b.x) * 0.0015; // gentle centering
       b.vy += (cy - b.y) * 0.0015;
     }
     // repulsion
     for (let i = 0; i < arr.length; i++) {
       for (let j = i + 1; j < arr.length; j++) {
         const a = arr[i], b = arr[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let d2 = dx * dx + dy * dy || 0.01;
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const d2 = dx * dx + dy * dy || 0.01;
         const d = Math.sqrt(d2);
         const f = 2600 / d2;
         const ux = dx / d, uy = dy / d;
@@ -172,7 +190,7 @@ export function mountOverlay(graph, opts = {}) {
     }
   }
 
-  function drawArrow(a, b, color = 'rgba(148,163,184,0.7)') {
+  function drawArrow(a: Body, b: Body, color = 'rgba(148,163,184,0.7)') {
     const ang = Math.atan2(b.y - a.y, b.x - a.x);
     const ex = b.x - Math.cos(ang) * 11, ey = b.y - Math.sin(ang) * 11;
     ctx.fillStyle = color;
@@ -184,17 +202,34 @@ export function mountOverlay(graph, opts = {}) {
   }
 
   let raf = 0;
-  function loop() { step(); draw(); raf = requestAnimationFrame(loop); }
+  let paused = false;
+  function loop() {
+    // Don't burn a core when the panel is collapsed or the tab is hidden; the
+    // force-sim is O(n^2) per frame, so this matters as the graph grows.
+    if (!paused && !(typeof document !== 'undefined' && document.hidden)) { step(); draw(); }
+    raf = requestAnimationFrame(loop);
+  }
   loop();
+
+  const onVisibility = () => { /* RAF loop re-checks document.hidden each frame */ };
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility);
 
   return {
     canvas,
-    destroy() { cancelAnimationFrame(raf); unsub(); window.removeEventListener('resize', size); canvas.remove(); },
+    pause() { paused = true; },
+    resume() { paused = false; },
+    destroy() {
+      cancelAnimationFrame(raf);
+      unsub();
+      window.removeEventListener('resize', size);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
+      canvas.remove();
+    },
   };
 }
 
-function ease(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
-function hexA(hex, a) {
+function ease(t: number): number { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+function hexA(hex: string, a: number): string {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }

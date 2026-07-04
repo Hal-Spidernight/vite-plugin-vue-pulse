@@ -1,35 +1,40 @@
-// @ts-check
 /**
- * Public entry for the reactivity-graph devtool.
+ * Public entry for the reactivity-graph devtool runtime.
  *
- *   import { graph, tracedRef, ... } from './reactivity-graph';
- *   import { mountPanel } from './reactivity-graph';
+ *   import { graph, tracedRef, mountPanel, loadStaticGraph, reactivityGraphPlugin }
+ *     from 'reactivity-graph/runtime';
  *
- * `mountPanel` renders a floating panel (title bar + legend + the force graph)
- * and can pre-seed the graph with a static "map" produced by the analyzer so
- * you see the full topology before anything fires at runtime.
+ * `mountPanel` renders a floating panel (title bar + legend + the force graph) and
+ * can pre-seed the graph with a static "map" produced by the analyzer so you see
+ * the full topology before anything fires at runtime. `reactivityGraphPlugin`
+ * (app.use) adds component/render-effect tracking.
  */
 import { graph } from './graph.js';
 import { mountOverlay, KIND_STYLE } from './overlay.js';
+import type { OverlayHandle } from './overlay.js';
+import type { ReactivityGraphExport } from './types.js';
 
-export { graph } from './graph.js';
+export { graph, ReactivityGraph } from './graph.js';
+export * from './types.js';
 export { mountOverlay, KIND_STYLE } from './overlay.js';
+export type { OverlayHandle } from './overlay.js';
 export * from './tracer.js';
+export { reactivityGraphPlugin } from './component-plugin.js';
+export type { ReactivityGraphPluginOptions } from './component-plugin.js';
 
 /**
  * Pre-seed the graph with statically-analyzed nodes/edges (the "map").
  * Runtime discovery will later confirm/animate them.
- * @param {{nodes:Array<any>, edges:Array<any>}} data
  */
-export function loadStaticGraph(data) {
+export function loadStaticGraph(data: Partial<ReactivityGraphExport>): void {
   for (const n of data.nodes || []) graph.addNode(n.id, n.label, n.kind, 'static');
-  for (const e of data.edges || []) graph.addEdge(e.from, e.to, e.key, 'static');
+  for (const e of data.edges || []) graph.addEdge(e.from, e.to, e.key, 'static', e.kind ?? 'read');
 }
 
-/**
- * @param {{ title?: string, width?: number, height?: number, collapsed?: boolean }} [opts]
- */
-export function mountPanel(opts = {}) {
+export interface PanelOptions { title?: string; width?: number; height?: number; collapsed?: boolean }
+export interface PanelHandle { panel: HTMLElement; overlay: OverlayHandle; destroy(): void }
+
+export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   const panel = document.createElement('div');
   panel.style.cssText = `
     position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
@@ -65,7 +70,12 @@ export function mountPanel(opts = {}) {
   const ov = mountOverlay(graph, { container: graphHost, width: opts.width || 460, height: opts.height || 320 });
 
   let collapsed = !!opts.collapsed;
-  const apply = () => { body.style.display = collapsed ? 'none' : 'block'; toggle.textContent = collapsed ? '+' : '–'; };
+  const apply = () => {
+    body.style.display = collapsed ? 'none' : 'block';
+    toggle.textContent = collapsed ? '+' : '–';
+    // stop the RAF force-sim while hidden so a collapsed panel costs nothing
+    if (collapsed) ov.pause(); else ov.resume();
+  };
   toggle.onclick = () => { collapsed = !collapsed; apply(); };
   apply();
 

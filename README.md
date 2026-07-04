@@ -1,147 +1,170 @@
-# Vue reactivity graph — static map + live propagation
+# vite-plugin-reactivity-graph
 
-A devtool that visualizes the causal relationships between Vue reactives
-(`ref` / `reactive` / `computed` / `watch` / `watchEffect`) as a graph, and
-**lights it up as changes propagate at runtime** — nodes glow when they fire and
-pulses travel along the edges from dependency to dependent.
+A **dev-only Vite plugin** that visualizes the causal relationships between Vue
+reactives (`ref` / `reactive` / `computed` / `watch` / `watchEffect` + the
+component **render effect**) as a graph, and **lights it up as changes propagate
+at runtime** — nodes glow when they fire and pulses travel along the edges from
+dependency to dependent.
 
 Two layers, one graph:
 
 | layer | what it gives you | where |
 |-------|-------------------|-------|
-| **static** | the *map*: which reactive monitors which, from source alone | `vize_croquis` extension (Rust) + `src/static/analyze.mjs` (TS mirror) |
-| **runtime** | the *traffic*: which change actually fired which effect, live | `src/reactivity-graph/` (tracer + overlay) |
+| **static** | the *map*: which reactive monitors which, from source alone | `src/static/analyze.ts` — built on the real **croquis / vize** toolchain |
+| **runtime** | the *traffic*: which change actually fired which effect, live | `src/reactivity-graph/` (tracer + render tracker + overlay) |
 
-The two share one node/edge schema and reconcile **by label**, so the static
-graph is drawn first (dashed) and the same nodes glow when runtime confirms
-them.
+Both emit the **same node/edge schema** (`src/reactivity-graph/types.ts`) and
+reconcile **by (component-scoped) label**, so the static graph is drawn first
+(dashed) and the same nodes glow when runtime confirms them.
 
-## Try it in 10 seconds (no build)
-
-Open **`standalone-demo.html`** in a browser. It loads Vue from a CDN, wires a
-small reactive graph, and shows the live glowing graph. Click the buttons and
-watch propagation flow: `first → fullName → greeting → titleEffect`, etc.
-
-## Run the real Vite integration
+## Install & use
 
 ```bash
-npm install
-npm run dev      # open the app; the panel auto-mounts bottom-right (dev only)
+npm i -D vite-plugin-reactivity-graph
 ```
 
-`vite-plugin-reactivity-graph` does three things in dev:
+```js
+// vite.config.ts
+import reactivityGraph from 'vite-plugin-reactivity-graph'
+export default {
+  plugins: [
+    vue(),                                   // must come before…
+    reactivityGraph({ include: ['src/**/*.vue'] }),
+  ],
+}
+```
 
-1. **Build-time transform** — rewrites `ref/reactive/computed/watch/watchEffect/…`
-   into their traced equivalents automatically. **You write plain Vue** — no
-   `tracedRef`, no mixin, no code changes. Labels are inferred from the variable
-   name (or source line for anonymous watchers).
+```ts
+// main.ts — one line adds render-effect / component tracking
+import { reactivityGraphPlugin } from 'vite-plugin-reactivity-graph/runtime'
+createApp(App).use(reactivityGraphPlugin).mount('#app')
+```
 
-   ```js
-   // you write this…                    …the plugin compiles this:
-   const count = ref(0)          →  const count = __RG.tracedRef(0, "count")
-   const dbl = computed(...)      →  const dbl = __RG.tracedComputed(..., "dbl")
-   watch(dbl, cb)                 →  __RG.tracedWatch(dbl, cb, {}, "watch@L12")
-   ```
+The panel auto-mounts bottom-right in dev. You **write plain Vue** — the plugin's
+build-time transform rewrites `ref/reactive/computed/watch/…` into traced
+equivalents automatically (no `tracedRef`, no mixin, no source changes). It is
+`apply: 'serve'` — dev-server only, never part of a production build.
 
-2. **Static analysis** over your `.vue` files, exposed as
-   `virtual:reactivity-graph/static` (the "map").
+## What's monitored
 
-3. **Auto-injects** the panel.
-
-Edges are discovered automatically via Vue's `onTrack` / `onTrigger` debugger
-hooks — you never declare them. Reads become `dep → effect` (gray) edges; writes
-made inside a watch callback / computed setter become `effect → reactive` (amber)
-edges, so two-way bindings show up as real loops.
-
-### What's monitored
-
-| element | as | notes |
+| element | status | notes |
 |---|---|---|
-| `ref` `shallowRef` `reactive` `shallowReactive` | node | writes intercepted via proxy |
-| `computed` (get / get+set) | node | setter writes → write-edges |
-| `readonly` `shallowReadonly` | node | read-only state |
-| `customRef` | node | ⚠ Vue doesn't expose its onTrack target — incoming edges can't be attributed |
-| `watch` `watchEffect` `watchPostEffect` `watchSyncEffect` | node | source = read deps; callback/body writes = write-edges |
-| `toRef` / `toRefs` | — | reads attribute to the source reactive + key |
-| **external reactives** (Pinia state, VueUse refs, `useRoute()`) | node `⟨ext⟩` | auto-registered by object identity the moment they're read inside instrumented code — **no need to transform `node_modules`** |
+| `ref` `shallowRef` `reactive` `shallowReactive` | ✅ | writes intercepted (incl. **nested `a.b.c=…`, array `push/splice`, `Map`/`Set` `set/add/delete`**) |
+| `computed` (get / get+set) | ✅ | setter writes → write-edges |
+| `readonly` `shallowReadonly` | ✅ | read-only state |
+| `watch` `watchEffect` `watchPostEffect` `watchSyncEffect` | ✅ | source = read deps; callback/body writes = write-edges |
+| `toRef` / `toRefs` | ✅ | `toRef` → node + keyed `source → toRef` edge; `toRefs` deps attribute to the source key |
+| **component render effect** | ✅ | `app.use(reactivityGraphPlugin)` → a `component` node per instance via `renderTracked`/`renderTriggered`. **Template-only state now glows.** |
+| **props (parent → child)** | ✅ | `<Comp>▸props` node + `parent → child` and `parent → props → render` edges |
+| **`provide` / `inject`** | ✅ | DI edge `providedReactive → <Consumer>` (via the transformed `provide`/`inject`) |
+| `defineModel` | ◐ | static: a `ref` node; runtime: flows through the props node |
+| `customRef` | ◐ | node + writes work; Vue hides its `onTrack` target, so *incoming* read-edges can't be attributed |
+| **external reactives** (Pinia state, VueUse refs, `useRoute()`) | ✅ | auto-registered as `⟨ext⟩` nodes by object identity — no need to transform `node_modules` |
 
-Circular reactivity is handled: two-way `watch` sync converges (no runaway) and
-cyclic `computed` chains are detected (`find_cycle`) and don't hang the ripple
-(visited-guard).
+Read edges (`dep → effect`) are gray; writes made inside a watch callback /
+computed setter / effect body (`effect → reactive`) are amber, so two-way
+bindings show up as real loops.
 
-## Static analysis only (the "map")
+**Circular reactivity** is handled: two-way `watch` sync converges (no runaway),
+and the propagation ripple has a visited-guard so cyclic chains don't hang. (True
+cycle *detection*/reporting — `find_cycle` — lives in the croquis Rust reference
+and the test fixture, not the shipped JS runtime.)
+
+**Lifecycle:** node identity is component-scoped (`Comp::count`), so two
+components that both declare `count` stay distinct; nodes are removed on
+`onScopeDispose` / component unmount, so long-running SPAs don't leak the graph.
+
+## Static analysis (the "map") — powered by real croquis
+
+The static analyzer is **not a hand-rolled clone**. It uses the actual
+`vize` / croquis toolchain:
+
+- **SFC splitting** → `@vizejs/native` `parseSfc` (real croquis)
+- **`<script>` AST** → `oxc-parser` (the same oxc croquis is built on)
+- **template deps** → binding expressions located in the template text and parsed
+  with the same oxc (croquis `parseTemplate` exposes the tag tree but its napi AST
+  collapses nested children to counts, so expression bodies aren't walkable
+  through it)
+
+The only bespoke layer is the **effect-graph edge builder** — which computed /
+watch / render reads which reactive. That is exactly the piece croquis does not
+yet expose (`effect_graph.rs` ships the model + `find_cycle` but no builder —
+issue #695). `croquis-rust/effect_graph_builder.rs` is the Rust reference for
+upstreaming that builder into `vize_croquis`.
 
 ```bash
-npm run analyze          # prints {nodes,edges} JSON + a Mermaid diagram for src/App.vue
-node src/static/cli.mjs  path/to/Component.vue ...
+npm run analyze                          # {nodes,edges} JSON + Mermaid for src/App.vue
+npx reactivity-graph-analyze Foo.vue …   # same, on any SFC(s)
 ```
 
 ## How it works
 
-**Runtime.** Each traced wrapper tags the underlying reactive object with a
-stable id and attaches `onTrack`/`onTrigger`. `onTrack` reports exactly which
-dependency an effect read (→ edge `dep → effect`). `onTrigger` reports which
-effect just re-ran; Vue includes the source object for direct reads but not for
-cascades through intermediate computeds — so the store reconstructs the full
-cascade from the recently-glowed upstream nodes (`graph.onEffectFired`). This
-was validated empirically (see `test/`), not assumed.
+**Runtime.** The build-time transform rewrites reactivity calls to traced
+wrappers. Each wrapper tags the underlying reactive with a stable id and attaches
+`onTrack`/`onTrigger`. `onTrack` reports exactly which dependency an effect read
+(→ `dep → effect`); `onTrigger` reports which effect re-ran, and `graph.onTrigger`
+/ `cascadeFrom` drive a staggered BFS ripple outward from the mutation origin. The
+render effect (which the transform can't reach — Vue synthesizes it) is captured
+separately via the `renderTracked`/`renderTriggered` hooks installed by
+`reactivityGraphPlugin`. `onTrack`/`onTrigger`/`renderTracked` are dev-only in Vue.
 
-**Static.** Two passes over the `<script setup>` AST: (1) collect reactive
-bindings, (2) for each `computed` getter / `watch` source / `watchEffect` body,
-collect the reactive identifiers read inside and emit `dep → effect` edges
-(`state.count` → keyed edge). Same algorithm in Rust (OXC, for `vize_croquis`)
-and TS (Babel, runnable here).
+**Static.** `parseSfc` → `<script setup>`(+`<script>`) + template → oxc AST → two
+passes (collect reactive bindings; wire `dep → effect` edges for each computed
+getter / watch source / watchEffect body / template expression), plus write-edges
+from assignments, mutating-method calls, and computed setters.
 
-## croquis integration (Rust)
+## Build / test
 
-The static half is designed to slot into `vize_croquis` — see
-`croquis-rust/README.md`. It fills the empty builder behind
-`effect_graph.rs`/issue #695 and reuses its `find_cycle()` to flag cyclic
-computed chains. That Rust file is a reference implementation to compile in the
-vize workspace (no Rust toolchain in the authoring env); its behavior is mirror-
-tested by `src/static/analyze.mjs`.
+```bash
+npm run build   # tsc -> dist/ (.js + .d.ts)   — the published artifact
+npm test        # builds, then runs 11 suites (incl. a real Vite dev-server e2e)
+npm run dev      # demo app; panel auto-mounts (dev only)
+```
+
+Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
+`tracedRef`, `mountPanel`, `loadStaticGraph`, `reactivityGraphPlugin`), `./static`
+(the analyzer). `vue` and `vite` are peer dependencies.
 
 ## Tests
 
-```bash
-npm test    # tracer.test.mjs (runtime, vs real Vue) + static.test.mjs + plugin.test.mjs
-```
-
-- `tracer.test.mjs` — edge discovery + multi-level cascade propagation against real `@vue/reactivity`.
-- `static.test.mjs` — the analyzer recovers the demo's causal edges from source.
-- `plugin.test.mjs` — the Vite plugin's virtual module + auto-inject.
-- `scale_cycle.test.mjs` — 86-node stress + circular reactivity (two-way sync, cyclic computed).
-- `computed_setter.test.mjs` — write-edges from watch callbacks + computed setters.
-- `external.test.mjs` — auto-registration of untraced (Pinia/VueUse-style) reactives.
-- `transform.test.mjs` — the build-time codemod turns plain Vue into a full live graph.
+- `tracer` / `computed_setter` / `scale_cycle` / `external` — runtime edge discovery, write-edges, 82-node stress + circular reactivity, external auto-register (vs real `@vue/reactivity`).
+- `deep_writes` — nested / array / `Map`/`Set` write capture + `toRef` linkage (vs real Vue).
+- `component_render` — render-effect tracking, component-scoped identity (no cross-component collision), unmount teardown (real client mount).
+- `cross_component` — parent→child + props flow + provide/inject DI edges (real client mount).
+- `static` — the croquis+oxc analyzer recovers the demo's causal + template edges from source.
+- `transform` — the build-time codemod turns plain Vue into a live graph.
+- `plugin` / `e2e_vite` — the Vite plugin's virtual modules + auto-inject, and a **real dev-server end-to-end** run (plugin-vue ordering, decoupled virtual-runtime injection).
 
 ## Files
 
 ```
-standalone-demo.html                 open-in-browser instant demo
+src/vite-plugin.ts                 dev plugin: virtual static graph + virtual runtime + auto-inject
 src/reactivity-graph/
-  graph.js       node/edge store + cascade reconstruction
-  tracer.js      traced ref/reactive/computed/watch/watchEffect wrappers
-  overlay.js     canvas force-graph: glow + pulses
-  index.js       mountPanel(), loadStaticGraph(), re-exports
+  types.ts         shared node/edge schema (single source of truth)
+  graph.ts         node/edge store + cascade + teardown (removeNode/refcount)
+  tracer.ts        traced ref/reactive/computed/watch/toRef/provide/inject wrappers
+  component-plugin.ts   app.use plugin: render-effect (renderTracked/Triggered) tracking
+  component-scope.ts    component-node identity, props node, provide/inject registry
+  overlay.ts       canvas force-graph: glow + pulses (pauses when collapsed/hidden)
+  index.ts         mountPanel(), loadStaticGraph(), re-exports (the ./runtime entry)
 src/static/
-  analyze.mjs    static analyzer (TS mirror of the croquis pass)
-  transform.mjs  build-time codemod: ref/reactive/... -> traced (zero source change)
-  cli.mjs        CLI -> JSON + Mermaid
-vite-plugin-reactivity-graph.mjs     dev plugin: virtual static graph + auto-inject
-src/App.vue, src/main.ts             demo app
+  analyze.ts       static analyzer (vize.parseSfc + oxc + effect-graph builder)
+  transform.ts     build-time codemod: ref/reactive/... -> traced (oxc-based)
+  cli.ts           CLI -> JSON + Mermaid
 croquis-rust/
-  effect_graph_builder.rs            the vize_croquis extension (Rust)
-  README.md                          how to wire it in
-test/                                automated verification
+  effect_graph_builder.rs   Rust reference for upstreaming the graph builder into vize_croquis (#695)
 ```
 
 ## Scope / honesty
 
-- Runtime tracer + static analyzer + Vite plugin are **implemented and tested**
-  here; the project builds (`vite build` clean).
-- The Rust croquis extension is written to compile against the vize workspace
-  but was **not** `cargo build`-verified in the authoring environment; treat the
-  TS analyzer as its executable spec.
-- `onTrack`/`onTrigger` are dev-only in Vue (stripped in production) — exactly
-  right for a devtool.
+- Runtime tracer, render tracker, static analyzer and Vite plugin are implemented
+  and tested here; the package builds clean (`tsc`) and all 11 suites pass,
+  including a real Vite dev-server e2e.
+- The plugin is dev-server-only (`apply: 'serve'`); it is intentionally absent
+  from `vite build`.
+- Cycle **detection** (`find_cycle`) is in the croquis Rust reference / test
+  fixture, not the shipped JS runtime (which only guards the ripple against
+  looping).
+- Static analysis depends on native packages (`@vizejs/native`, `oxc-parser`);
+  these are used Node-side by the plugin/analyzer only — the browser runtime bundle
+  does not import them.

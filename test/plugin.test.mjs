@@ -1,7 +1,7 @@
 // Verify the Vite plugin without booting a dev server: drive its hooks directly.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import reactivityGraph from '../vite-plugin-reactivity-graph.mjs';
+import reactivityGraph from '../dist/vite-plugin.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 let pass = 0, fail = 0;

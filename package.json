@@ -1,22 +1,65 @@
 {
-  "name": "reactivity-graph-demo",
-  "private": true,
+  "name": "vite-plugin-reactivity-graph",
   "version": "0.1.0",
   "type": "module",
+  "description": "Dev-only Vite plugin that visualizes Vue reactivity (ref/reactive/computed/watch/watchEffect + render effects) as a live, glowing dependency graph — static map + runtime traffic.",
+  "keywords": [
+    "vue",
+    "vite-plugin",
+    "reactivity",
+    "devtool",
+    "graph",
+    "visualization"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/vite-plugin.d.ts",
+      "import": "./dist/vite-plugin.js"
+    },
+    "./runtime": {
+      "types": "./dist/reactivity-graph/index.d.ts",
+      "import": "./dist/reactivity-graph/index.js"
+    },
+    "./static": {
+      "types": "./dist/static/analyze.d.ts",
+      "import": "./dist/static/analyze.js"
+    }
+  },
+  "types": "./dist/vite-plugin.d.ts",
+  "bin": {
+    "reactivity-graph-analyze": "./dist/static/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
   "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "vite",
-    "build": "vite build",
+    "build:demo": "vite build",
     "preview": "vite preview",
-    "analyze": "node src/static/cli.mjs src/App.vue",
-    "test": "node test/tracer.test.mjs && node test/static.test.mjs && node test/plugin.test.mjs && node test/scale_cycle.test.mjs && node test/computed_setter.test.mjs && node test/external.test.mjs && node test/transform.test.mjs"
+    "analyze": "npm run build && node dist/static/cli.js src/App.vue",
+    "pretest": "npm run build",
+    "test": "node test/tracer.test.mjs && node test/static.test.mjs && node test/plugin.test.mjs && node test/scale_cycle.test.mjs && node test/computed_setter.test.mjs && node test/external.test.mjs && node test/transform.test.mjs && node test/deep_writes.test.mjs && node test/component_render.test.mjs && node test/cross_component.test.mjs && node test/e2e_vite.test.mjs",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "peerDependencies": {
+    "vite": "^5.0.0 || ^6.0.0 || ^7.0.0",
+    "vue": "^3.4.0"
   },
   "dependencies": {
-    "vue": "^3.5.0"
+    "@vizejs/native": "0.276.0",
+    "oxc-parser": "^0.138.0"
   },
   "devDependencies": {
-    "@babel/parser": "^7.25.0",
+    "@types/node": "^26.1.0",
     "@vitejs/plugin-vue": "^5.1.0",
-    "@vue/compiler-sfc": "^3.5.0",
-    "vite": "^5.4.0"
+    "happy-dom": "^20.10.6",
+    "typescript": "^6.0.3",
+    "vite": "^5.4.0",
+    "vue": "^3.5.0"
   }
 }

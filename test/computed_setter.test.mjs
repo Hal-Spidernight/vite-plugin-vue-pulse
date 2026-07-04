@@ -1,7 +1,7 @@
 // Write-edges from watch callbacks (arg 2) and computed setters.
 import { nextTick } from 'vue';
-import { graph } from '../src/reactivity-graph/graph.js';
-import { tracedRef, tracedComputed, tracedWatch } from '../src/reactivity-graph/tracer.js';
+import { graph } from '../dist/reactivity-graph/graph.js';
+import { tracedRef, tracedComputed, tracedWatch } from '../dist/reactivity-graph/tracer.js';
 
 let pass = 0, fail = 0;
 const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));

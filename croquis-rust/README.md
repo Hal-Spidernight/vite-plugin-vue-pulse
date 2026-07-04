@@ -1,5 +1,12 @@
 # croquis effect-graph builder (static half)
 
+> **Status:** the JS side no longer *clones* croquis. `src/static/analyze.ts` now
+> consumes the **real** `vize` toolchain — `@vizejs/native` `parseSfc` for SFC
+> splitting and `oxc-parser` (croquis's own oxc) for the script/template AST — and
+> only adds the effect-graph *edge* builder on top. This Rust file is the reference
+> for upstreaming that same builder into `vize_croquis` itself (issue #695), so the
+> static graph can eventually come straight from croquis with no JS layer at all.
+
 This is the `vize_croquis` extension that produces the static reactivity graph —
 the "map" that the runtime overlay lights up. It fills the empty slot left by
 `crates/vize_croquis/src/effect_graph.rs` (issue #695), which today ships only

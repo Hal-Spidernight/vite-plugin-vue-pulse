@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { analyzeSfc } from '../src/static/analyze.mjs';
+import { analyzeSfc } from '../dist/static/analyze.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(__dir, '../src/App.vue'), 'utf8');
@@ -39,6 +39,12 @@ ok(edgeToKind('greeting', 'watchEffect'), 'greeting -> <watchEffect node>');
 // two-way sync writes captured as write-edges (watch callback / arg 2)
 ok(writeTo('fahrenheit'), 'watch callback write -> fahrenheit (write edge)');
 ok(writeTo('celsius'), 'watch callback write -> celsius (write edge)');
+// template deps -> component render node (via real croquis parseSfc + oxc)
+const toKind = (fromLabel, toKind) => g.edges.some((e) => labelOf(e.from) === fromLabel && g.nodes.find((n) => n.id === e.to)?.kind === toKind);
+ok(g.nodes.some((n) => n.kind === 'component' && n.label === '<App>'), 'component render node <App> from <template>');
+ok(toKind('fullName', 'component'), 'template read: fullName -> <App> render');
+ok(toKind('count', 'component'), 'template read: count -> <App> render');
+ok(g.edges.some((e) => labelOf(e.from) === 'cart' && e.key === 'apples' && g.nodes.find((n) => n.id === e.to)?.kind === 'component'), 'template keyed read: cart.apples -> <App>');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

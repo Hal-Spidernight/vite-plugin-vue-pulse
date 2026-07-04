@@ -2,12 +2,12 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { nextTick } from 'vue';
-import { transformReactivity } from '../src/static/transform.mjs';
-import { graph } from '../src/reactivity-graph/graph.js';
+import { transformReactivity } from '../dist/static/transform.js';
+import { graph } from '../dist/reactivity-graph/graph.js';
 
 // Portable paths (no hardcoded absolutes): resolve relative to this test file.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const helpersPath = path.join(projectRoot, 'src/reactivity-graph/index.js');
+const helpersPath = path.join(projectRoot, 'dist/reactivity-graph/index.js');
 const transformedPath = path.join(projectRoot, 'test', '_transformed.mjs');
 
 // A plain component script — NO traced wrappers, NO mixin. Just normal Vue.

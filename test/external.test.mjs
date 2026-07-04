@@ -1,6 +1,6 @@
 import { ref, reactive, nextTick } from 'vue';
-import { graph } from '../src/reactivity-graph/graph.js';
-import { tracedComputed, tracedWatchPostEffect, tracedWatchSyncEffect } from '../src/reactivity-graph/tracer.js';
+import { graph } from '../dist/reactivity-graph/graph.js';
+import { tracedComputed, tracedWatchPostEffect, tracedWatchSyncEffect } from '../dist/reactivity-graph/tracer.js';
 let pass=0,fail=0; const ok=(c,m)=>c?(pass++,console.log('  ✓',m)):(fail++,console.error('  ✗',m));
 const lbl=id=>graph.nodes.get(id)?.label;
 // UNTRACED external reactives (simulating Pinia/VueUse/library state)
