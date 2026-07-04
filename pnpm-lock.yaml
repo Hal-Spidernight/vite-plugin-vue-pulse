@@ -46,7 +46,7 @@ importers:
       vite:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@26.1.0)
-      vite-plugin-reactivity-graph:
+      vite-plugin-vue-pulse:
         specifier: workspace:*
         version: link:..
 

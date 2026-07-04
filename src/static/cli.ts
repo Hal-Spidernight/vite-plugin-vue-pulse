@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Static reactivity-graph analyzer CLI.
-//   reactivity-graph-analyze <file.vue> [more.vue ...]
+//   vue-pulse-analyze <file.vue> [more.vue ...]
 //     -> prints {nodes,edges} JSON + a Mermaid diagram
 import fs from 'node:fs';
 import { analyzeSfc } from './analyze.js';

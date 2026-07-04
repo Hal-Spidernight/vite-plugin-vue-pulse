@@ -41,7 +41,7 @@ function randomName() {
 
 <template>
   <main>
-    <h1>Vue reactivity graph — playground</h1>
+    <h1>🕸 vue-pulse — Vue reactivity graph playground</h1>
     <p class="hint">Mutate state below and watch the panel (bottom-right): nodes glow and pulses travel along the causal edges.</p>
 
     <section>

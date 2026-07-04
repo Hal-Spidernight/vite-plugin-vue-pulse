@@ -16,8 +16,8 @@ import type { ReactivityGraphExport } from './types.js';
 
 export { graph, ReactivityGraph } from './graph.js';
 export * from './types.js';
-export { mountOverlay, KIND_STYLE } from './overlay.js';
-export type { OverlayHandle } from './overlay.js';
+export { mountOverlay, KIND_STYLE, createForceLayout } from './overlay.js';
+export type { OverlayHandle, ForceLayout, Body } from './overlay.js';
 export * from './tracer.js';
 export { reactivityGraphPlugin } from './component-plugin.js';
 export type { ReactivityGraphPluginOptions } from './component-plugin.js';
@@ -45,7 +45,7 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
 
   const bar = document.createElement('div');
   bar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;background:#0f172a;border-bottom:1px solid #1e293b;';
-  bar.innerHTML = `<span style="font-weight:600;color:#fff">🕸 reactivity graph</span>
+  bar.innerHTML = `<span style="font-weight:600;color:#fff">🕸 vue-pulse</span>
     <span style="opacity:.6">${opts.title || 'runtime + static'}</span>`;
   const toggle = document.createElement('button');
   toggle.textContent = '–';
@@ -55,19 +55,19 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
 
   const body = document.createElement('div');
   const graphHost = document.createElement('div');
-  graphHost.style.cssText = `width:100%;height:${(opts.height || 320)}px;position:relative;`;
+  graphHost.style.cssText = `width:100%;height:${(opts.height || 360)}px;position:relative;`;
   body.appendChild(graphHost);
 
   const legend = document.createElement('div');
   legend.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;padding:8px 10px;border-top:1px solid #1e293b;';
   legend.innerHTML = Object.values(KIND_STYLE).map((s) =>
     `<span style="display:inline-flex;align-items:center;gap:5px"><i style="width:9px;height:9px;border-radius:50%;background:${s.color};display:inline-block"></i>${s.label}</span>`
-  ).join('') + '<span style="opacity:.5;margin-left:auto">dashed = static-only · glow/pulse = live</span>';
+  ).join('') + '<span style="opacity:.5;margin-left:auto">dashed = static-only · glow/pulse = live · drag to rotate</span>';
   body.appendChild(legend);
   panel.appendChild(body);
   document.body.appendChild(panel);
 
-  const ov = mountOverlay(graph, { container: graphHost, width: opts.width || 460, height: opts.height || 320 });
+  const ov = mountOverlay(graph, { container: graphHost, width: opts.width || 460, height: opts.height || 360 });
 
   let collapsed = !!opts.collapsed;
   const apply = () => {

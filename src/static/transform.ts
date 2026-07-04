@@ -38,7 +38,7 @@ const SOURCES = new Set(['vue', '@vue/reactivity']);
 export interface TransformResult { code: string; changed: boolean }
 
 export function transformReactivity(code: string, _filename = 'anon.js', opts: { importPath?: string } = {}): TransformResult {
-  const importPath = opts.importPath || 'virtual:reactivity-graph/runtime';
+  const importPath = opts.importPath || 'virtual:vue-pulse/runtime';
   let program: AnyNode;
   try {
     const r = parseSync('module.tsx', code, { sourceType: 'module', lang: 'tsx' });

@@ -1,24 +1,24 @@
 /**
- * vite-plugin-reactivity-graph
+ * vite-plugin-vue-pulse
  *
  * Dev-only Vite plugin. Three jobs:
  *   1. Build-time transform: rewrites `ref`/`reactive`/`computed`/`watch`/… into
  *      their traced equivalents so the devtool discovers every node + edge with
  *      ZERO source change.
  *   2. Static analysis over your `.vue` files, exposed as the virtual module
- *      `virtual:reactivity-graph/static` (the "map").
+ *      `virtual:vue-pulse/static` (the "map").
  *   3. Auto-injects the devtool panel into the app entry.
  *
  * Decoupling: the runtime is shipped INSIDE this package and exposed as the
- * virtual module `virtual:reactivity-graph/runtime` (resolved to the packaged
+ * virtual module `virtual:vue-pulse/runtime` (resolved to the packaged
  * file), so nothing is injected that points at the consuming project's file tree.
  *
  * Usage (vite.config):
- *   import reactivityGraph from 'vite-plugin-reactivity-graph'
+ *   import reactivityGraph from 'vite-plugin-vue-pulse'
  *   export default { plugins: [vue(), reactivityGraph({ include: ['src/**\/*.vue'] })] }
  *
  * For component/render-effect tracking, also add in your entry:
- *   import { reactivityGraphPlugin } from 'vite-plugin-reactivity-graph/runtime'
+ *   import { reactivityGraphPlugin } from 'vite-plugin-vue-pulse/runtime'
  *   app.use(reactivityGraphPlugin)
  */
 import fs from 'node:fs';
@@ -28,9 +28,9 @@ import type { Plugin } from 'vite';
 import { analyzeSfc } from './static/analyze.js';
 import { transformReactivity } from './static/transform.js';
 
-const VIRTUAL_STATIC = 'virtual:reactivity-graph/static';
+const VIRTUAL_STATIC = 'virtual:vue-pulse/static';
 const RESOLVED_STATIC = '\0' + VIRTUAL_STATIC;
-const VIRTUAL_RUNTIME = 'virtual:reactivity-graph/runtime';
+const VIRTUAL_RUNTIME = 'virtual:vue-pulse/runtime';
 const RESOLVED_RUNTIME = '\0' + VIRTUAL_RUNTIME;
 
 export interface ReactivityGraphOptions {
@@ -79,7 +79,7 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
   }
 
   return {
-    name: 'vite-plugin-reactivity-graph',
+    name: 'vite-plugin-vue-pulse',
     apply: 'serve',
     // run AFTER @vitejs/plugin-vue so we transform the already-extracted <script>
     enforce: 'post',
@@ -111,7 +111,7 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
     },
     transform(code, id) {
       if (/node_modules/.test(id)) return;
-      if (id.includes('/reactivity-graph/') || id.includes('reactivity-graph/runtime')) return; // never instrument the tool itself
+      if (id.includes('/reactivity-graph/') || id.includes('virtual:vue-pulse')) return; // never instrument the tool itself
       let out = code;
 
       // 1. build-time rewrite: ref/reactive/computed/watch/... -> traced

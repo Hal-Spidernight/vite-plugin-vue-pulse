@@ -1,4 +1,4 @@
-# vite-plugin-reactivity-graph
+# vite-plugin-vue-pulse
 
 A **dev-only Vite plugin** that visualizes the causal relationships between Vue
 reactives (`ref` / `reactive` / `computed` / `watch` / `watchEffect` + the
@@ -20,12 +20,12 @@ reconcile **by (component-scoped) label**, so the static graph is drawn first
 ## Install & use
 
 ```bash
-npm i -D vite-plugin-reactivity-graph
+npm i -D vite-plugin-vue-pulse
 ```
 
 ```js
 // vite.config.ts
-import reactivityGraph from 'vite-plugin-reactivity-graph'
+import reactivityGraph from 'vite-plugin-vue-pulse'
 export default {
   plugins: [
     vue(),                                   // must come before…
@@ -36,7 +36,7 @@ export default {
 
 ```ts
 // main.ts — one line adds render-effect / component tracking
-import { reactivityGraphPlugin } from 'vite-plugin-reactivity-graph/runtime'
+import { reactivityGraphPlugin } from 'vite-plugin-vue-pulse/runtime'
 createApp(App).use(reactivityGraphPlugin).mount('#app')
 ```
 
@@ -86,15 +86,18 @@ The static analyzer is **not a hand-rolled clone**. It uses the actual
   collapses nested children to counts, so expression bodies aren't walkable
   through it)
 
-The only bespoke layer is the **effect-graph edge builder** — which computed /
-watch / render reads which reactive. That is exactly the piece croquis does not
-yet expose (`effect_graph.rs` ships the model + `find_cycle` but no builder —
-issue #695); this edge-building logic is what would be upstreamed into
-`vize_croquis` so the static graph could eventually come straight from croquis.
+The **effect-graph edge builder** — which computed / watch reads which reactive —
+is the piece croquis historically didn't expose (`effect_graph.rs` shipped the
+model + `find_cycle` but no builder, issue #695). That builder is now implemented
+**upstream in `vize_croquis`** (`effect_graph_builder.rs`) and exposed as the
+`analyzeReactivity` napi. When the installed `@vizejs/native` provides it, this
+plugin's analyzer is a thin **adapter** over croquis' own `{nodes, edges, cycle}`
+(nodes classified by croquis, cycles from croquis' `find_cycle`); otherwise it
+falls back to the bundled oxc analyzer. Either way you get the same graph shape.
 
 ```bash
 npm run analyze                          # {nodes,edges} JSON + Mermaid for playground/src/App.vue
-npx reactivity-graph-analyze Foo.vue …   # same, on any SFC(s)
+npx vue-pulse-analyze Foo.vue …   # same, on any SFC(s)
 ```
 
 ## How it works

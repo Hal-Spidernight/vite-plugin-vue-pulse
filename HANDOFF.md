@@ -3,7 +3,7 @@
 Continuation notes for picking this up in Claude Code.
 
 ## What this is
-A dev-only **Vite plugin** (`vite-plugin-reactivity-graph`) that visualizes causal
+A dev-only **Vite plugin** (`vite-plugin-vue-pulse`) that visualizes causal
 relationships between Vue reactives (ref/reactive/computed/watch/watchEffect + the
 component **render effect**) and lights the graph up as changes propagate at
 runtime. Two layers on one graph model: **static** ("map", from source via real
@@ -12,15 +12,27 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
 ## Status — done & verified (11 suites, all green; `tsc` build clean)
 - **Full TypeScript**, builds to `dist/` (.js + .d.ts). Publishable `package.json`
   (`exports`: `.` / `./runtime` / `./static`; peerDeps vue+vite). Tests import `dist`.
-- **Decoupled**: the plugin injects `virtual:reactivity-graph/runtime` (re-exports
+- **Decoupled**: the plugin injects `virtual:vue-pulse/runtime` (re-exports
   the packaged runtime), never a consumer `/src/...` path. `enforce:'post'`,
   broadened entry regex, HMR-invalidated static module. Verified by `e2e_vite`
   (real dev server + plugin-vue ordering).
 - **Static analysis uses the REAL croquis/vize toolchain** — `@vizejs/native`
   `parseSfc` + `oxc-parser` for the script/template expressions. Babel and
-  @vue/compiler-sfc were removed. The effect-graph EDGE builder is the only
-  bespoke layer (the croquis #695 gap) — the piece that would be upstreamed into
-  `vize_croquis`.
+  @vue/compiler-sfc were removed.
+- **The effect-graph builder (#695) is now implemented UPSTREAM in vize_croquis**
+  (local checkout `~/Documents/workspace-hal/vue2-vize/vize`, uncommitted — ready
+  to PR): `crates/vize_croquis/src/effect_graph_builder.rs` builds nodes (from
+  croquis' `reactivity.sources()`) + read/write edges (oxc walk of computed
+  getters / watch sources / watchEffect bodies) + `find_cycle`; exposed as the
+  `analyzeReactivity` napi in `crates/vize_vitrine/src/napi/sfc/reactivity.rs`.
+  cargo-tested (2 Rust tests incl. two-way-sync cycle) and verified end-to-end via
+  the built `.node` on the real playground `App.vue`.
+- **The plugin's `analyze.ts` is now an ADAPTER**: it calls croquis'
+  `analyzeReactivity` when the installed `@vizejs/native` exposes it (adapting
+  `{nodes,edges,cycle}` + adding template→component edges), and falls back to the
+  bundled oxc analyzer otherwise. The published `@vizejs/native@0.276` lacks it, so
+  the fallback runs today; it auto-upgrades once a napi build with
+  `analyzeReactivity` ships.
 - **`playground/`** is a separate sample Vue app (workspace member) that consumes
   the plugin **by package name**; it's the live demo and the e2e integration
   target. (The old `standalone-demo.html` and the `croquis-rust/` Rust clone were

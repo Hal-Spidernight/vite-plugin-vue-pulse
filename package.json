@@ -1,5 +1,5 @@
 {
-  "name": "vite-plugin-reactivity-graph",
+  "name": "vite-plugin-vue-pulse",
   "version": "0.1.0",
   "type": "module",
   "description": "Dev-only Vite plugin that visualizes Vue reactivity (ref/reactive/computed/watch/watchEffect + render effects) as a live, glowing dependency graph — static map + runtime traffic.",
@@ -28,7 +28,7 @@
   },
   "types": "./dist/vite-plugin.d.ts",
   "bin": {
-    "reactivity-graph-analyze": "./dist/static/cli.js"
+    "vue-pulse-analyze": "./dist/static/cli.js"
   },
   "files": [
     "dist",
@@ -49,7 +49,7 @@
     "playground:build": "npm run build && pnpm --filter playground build",
     "analyze": "npm run build && node dist/static/cli.js playground/src/App.vue",
     "pretest": "npm run build",
-    "test": "node test/tracer.test.mjs && node test/static.test.mjs && node test/plugin.test.mjs && node test/scale_cycle.test.mjs && node test/computed_setter.test.mjs && node test/external.test.mjs && node test/transform.test.mjs && node test/deep_writes.test.mjs && node test/component_render.test.mjs && node test/cross_component.test.mjs && node test/e2e_vite.test.mjs",
+    "test": "node test/tracer.test.mjs && node test/static.test.mjs && node test/plugin.test.mjs && node test/scale_cycle.test.mjs && node test/computed_setter.test.mjs && node test/external.test.mjs && node test/transform.test.mjs && node test/deep_writes.test.mjs && node test/component_render.test.mjs && node test/cross_component.test.mjs && node test/layout.test.mjs && node test/e2e_vite.test.mjs",
     "prepack": "npm run clean && npm run build",
     "prepublishOnly": "npm run clean && npm test",
     "pack:dry": "npm pack --dry-run",

@@ -24,7 +24,7 @@ try {
   // 1. the parent SFC goes through plugin-vue, then our transform rewrites ref/... -> traced
   const app = await server.transformRequest('/src/App.vue');
   ok(!!app && /tracedRef|tracedReactive|tracedComputed/.test(app.code), 'App.vue: ref/reactive/computed rewritten to traced through Vite');
-  ok(!!app && /virtual:reactivity-graph\/runtime/.test(app.code), 'App.vue: traced helpers imported from the virtual runtime');
+  ok(!!app && /virtual:vue-pulse\/runtime/.test(app.code), 'App.vue: traced helpers imported from the virtual runtime');
   ok(!!app && !/['"]\/src\/reactivity-graph\//.test(app.code), 'App.vue: no consumer-tree /src import injected (decoupled)');
 
   // 2. the child SFC is instrumented too
@@ -36,11 +36,11 @@ try {
   ok(!!main && /mountPanel/.test(main.code) && /loadStaticGraph/.test(main.code), 'main.ts: panel auto-injected');
 
   // 4. virtual runtime resolves & re-exports the packaged runtime
-  const rt = await server.transformRequest('virtual:reactivity-graph/runtime');
+  const rt = await server.transformRequest('virtual:vue-pulse/runtime');
   ok(!!rt && /export\s*\*\s*from/.test(rt.code), 'virtual runtime resolves to a re-export of the packaged runtime');
 
   // 5. virtual static map resolves with the analyzed graph (App + Counter)
-  const stat = await server.transformRequest('virtual:reactivity-graph/static');
+  const stat = await server.transformRequest('virtual:vue-pulse/static');
   ok(!!stat && /staticGraph/.test(stat.code) && /first/.test(stat.code), 'virtual static map resolves with analyzed nodes');
 } finally {
   server.close().catch(() => {}); // can hang in middlewareMode; process.exit tears down

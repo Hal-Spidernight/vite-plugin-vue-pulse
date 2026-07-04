@@ -12,8 +12,8 @@ const plugin = reactivityGraph({ include: ['src/**/*.vue'], autoInject: true });
 plugin.configResolved({ root });
 
 // resolveId + load => virtual static graph module
-const rid = plugin.resolveId('virtual:reactivity-graph/static');
-ok(rid === '\0virtual:reactivity-graph/static', 'resolveId returns resolved virtual id');
+const rid = plugin.resolveId('virtual:vue-pulse/static');
+ok(rid === '\0virtual:vue-pulse/static', 'resolveId returns resolved virtual id');
 
 const loaded = plugin.load(rid);
 ok(/export const staticGraph =/.test(loaded), 'load() emits staticGraph export');

@@ -19,8 +19,10 @@
  * overlay onto one graph, reconciled by label.
  */
 import { parseSync } from 'oxc-parser';
-import { parseSfc } from '@vizejs/native';
+import * as vize from '@vizejs/native';
 import type { NodeKind, EdgeKind, ReactivityGraphExport } from '../reactivity-graph/types.js';
+
+const parseSfc = (vize as any).parseSfc;
 
 type AnyNode = any;
 interface Binding { id: string; kind: string }
@@ -56,8 +58,60 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): ReactivityGra
   const desc: AnyNode = parseSfc(source, { filename });
   // Analyze BOTH <script setup> and a plain <script> (defineOptions/name pattern).
   const parts = [desc?.scriptSetup?.content, desc?.script?.content].filter(Boolean) as string[];
+  const script = parts.join('\n');
   const componentLabel = `<${String(filename).split('/').pop()!.replace(/\.\w+$/, '')}>`;
-  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, componentLabel });
+
+  // Prefer the REAL croquis effect-graph builder when the installed
+  // @vizejs/native exposes it (analyzeReactivity, added upstream for issue #695):
+  // nodes + edges come straight from croquis, and this file is just the adapter.
+  // Falls back to the local oxc analyzer when the napi isn't available yet.
+  const analyzeReactivity = (vize as any).analyzeReactivity;
+  if (typeof analyzeReactivity === 'function') {
+    try {
+      return adaptCroquisGraph(analyzeReactivity(script), { template: desc?.template?.content, componentLabel });
+    } catch { /* fall through to the local analyzer */ }
+  }
+  return analyzeScript(script, { template: desc?.template?.content, componentLabel });
+}
+
+/**
+ * Adapt croquis' `analyzeReactivity` output ({nodes,edges,cycle}) to our graph
+ * schema. Croquis authoritatively classifies the nodes and wires script edges;
+ * template→component edges are added here (croquis' builder is script-only).
+ */
+function adaptCroquisGraph(g: any, opts: AnalyzeOptions = {}): ReactivityGraphExport {
+  const nodeId = (label: string) => `static:${label}`;
+  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static' }> = [];
+  const seenNode = new Set<string>();
+  const bindings = new Map<string, Binding>();
+  for (const n of g.nodes || []) {
+    if (seenNode.has(n.id ?? n.label)) continue;
+    seenNode.add(n.id ?? n.label);
+    nodes.push({ id: nodeId(n.label), label: n.label, kind: n.kind as NodeKind, origin: 'static' });
+    bindings.set(n.label, { id: nodeId(n.label), kind: n.kind });
+  }
+  const edges = new Map<string, { from: string; to: string; key?: string; origin: 'static'; kind: EdgeKind }>();
+  const addEdge = (from: string, toId: string, key: string | undefined, kind: EdgeKind) => {
+    if (from === toId) return;
+    const k = `${from}->${toId}${key ? '#' + key : ''}#${kind}`;
+    if (!edges.has(k)) edges.set(k, { from, to: toId, key, origin: 'static', kind });
+  };
+  for (const e of g.edges || []) addEdge(nodeId(e.from), nodeId(e.to), undefined, (e.kind || 'read') as EdgeKind);
+
+  // template deps -> component render node (same oxc pass as the fallback path)
+  if (opts.template) {
+    const compLabel = opts.componentLabel || '<Component>';
+    let created = false;
+    for (const expr of templateExpressions(opts.template)) {
+      let sub: AnyNode;
+      try { sub = parseModule(`(${expr});`); } catch { continue; }
+      for (const dep of readsIn(sub, bindings)) {
+        if (!created) { nodes.push({ id: nodeId(compLabel), label: compLabel, kind: 'component', origin: 'static' }); created = true; }
+        addEdge(nodeId(dep.label), nodeId(compLabel), dep.key, 'read');
+      }
+    }
+  }
+  return { nodes, edges: [...edges.values()] };
 }
 
 export interface AnalyzeOptions {
