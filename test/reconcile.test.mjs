@@ -32,13 +32,9 @@ watch(hoge, () => { hoge3.value = 'hello!'; });
 </script>
 <template><div>{{ hoge }}{{ hoge2 }}{{ hoge3 }}</div></template>`;
 
-// 1. static map (dashed) — what the vite plugin loads via loadStaticGraph
-loadStaticGraph(analyzeSfc(sfc, 'App.vue'));
-const staticCount = graph.nodes.size;
-console.log('[static] nodes:', [...graph.nodes.values()].map((n) => `${n.label}(${n.kind})`).join(', '));
-
-// 2. runtime: a component named "App" whose setup runs the traced wrappers exactly
-// as the build-time transform emits them (labels: hoge/hoge2/hoge3 + anonymous watch#1).
+// The REAL auto-inject order that broke: the app MOUNTS FIRST (the user's
+// `createApp(App).mount()` runs before the appended `loadStaticGraph`). With
+// deterministic ids this must still reconcile to one node each, regardless of order.
 const App = {
   name: 'App',
   setup() {
@@ -53,6 +49,9 @@ const app = createApp(App);
 app.use(reactivityGraphPlugin);
 app.mount(document.createElement('div'));
 await nextTick();
+
+// 2. NOW load the static map (as the appended inject does, AFTER mount)
+loadStaticGraph(analyzeSfc(sfc, 'App.vue'));
 
 console.log('[after runtime] nodes:', [...graph.nodes.values()].map((n) => `${n.label}(${n.kind})`).join(', '));
 

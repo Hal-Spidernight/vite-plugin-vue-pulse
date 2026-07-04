@@ -76,8 +76,11 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
   // the build-time transform's, so static and runtime effects reconcile.
   let anonWatch = 0, anonWatchEffect = 0;
 
+  // Node id = the declaration's deterministic identity, IDENTICAL to what the
+  // runtime tracer produces (`Comp::label`, or bare `label` with no scope), so the
+  // static map and the live graph dedup to one node each.
   const scopePrefix = opts.scope ? `${opts.scope}::` : '';
-  const nodeId = (label: string) => `static:${scopePrefix}${label}`;
+  const nodeId = (label: string) => `${scopePrefix}${label}`;
   const addNode = (label: string, kind: string): string => {
     if (!nodes.find((n) => n.id === nodeId(label))) {
       nodes.push({ id: nodeId(label), label, kind: kind as NodeKind, origin: 'static' });
@@ -176,8 +179,8 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
   // ---- template pass: reads in <template> feed the component render effect ---
   if (opts.template) {
     const compLabel = opts.componentLabel || '<Component>';
-    // reconcile with the runtime render node, which is keyed `component::<Name>`
-    const componentNodeId = opts.scope ? `static:component::${opts.scope}` : `static:${compLabel}`;
+    // same id the runtime render tracker uses, so they dedup to one node
+    const componentNodeId = opts.scope ? `component::${opts.scope}` : compLabel;
     let created = false;
     for (const expr of templateExpressions(opts.template)) {
       let sub: AnyNode;

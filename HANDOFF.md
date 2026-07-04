@@ -7,7 +7,8 @@ A dev-only **Vite plugin** (`vite-plugin-vue-pulse`) that visualizes causal
 relationships between Vue reactives (ref/reactive/computed/watch/watchEffect + the
 component **render effect**) and lights the graph up as changes propagate at
 runtime. Two layers on one graph model: **static** ("map", from source) +
-**runtime** ("traffic", live), reconciled by component-scoped label.
+**runtime** ("traffic", live). Both address a node by the SAME deterministic id
+(`Comp::label`), so one declaration = one node (dedup by id, order-independent).
 
 ## Status — done & verified (11 suites, all green; `tsc` build clean)
 - **Full TypeScript**, builds to `dist/` (.js + .d.ts). Publishable `package.json`
@@ -38,10 +39,15 @@ runtime. Two layers on one graph model: **static** ("map", from source) +
 - **Deep write capture**: nested `a.b.c=…`, array `push/splice`, `Map`/`Set`
   `set/add/delete` → write-edges (reads stay intact — verified against Vue 3.5.39).
 - **toRef/toRefs**: real node + keyed `source→toRef` edge.
-- **Correctness fixes** (from the review): component-scoped node identity
-  (`Comp::count`) so same-named refs across components don't merge; `graph.removeNode`
-  + refcount + `onScopeDispose` teardown (no SPA leak); `reset()` clears labelIndex;
-  overlay pauses when collapsed / tab hidden.
+- **Node identity = deterministic id per declaration** (`Comp::label`, `component::Comp`,
+  anonymous effects `Comp::watch#N` by source order). BOTH the static analyzer and
+  the runtime tracer produce that exact id, so `graph.addNode` dedups by id → ONE
+  node per declaration, order-independent. There is NO label-matching reconciliation
+  and NO `labelIndex`/`claimId` (removed) — this is what guarantees no duplicates
+  (the earlier reconcile-by-label approach broke when static loaded after mount).
+  Same-named refs across components stay distinct via the `Comp::` scope.
+- Teardown: `graph.removeNode` + refcount + `onScopeDispose` (no SPA leak); overlay
+  pauses when collapsed / tab hidden.
 - **Template deps** static: `dep → <Component>` edges from `<template>` reads.
 
 ## Decisions locked in

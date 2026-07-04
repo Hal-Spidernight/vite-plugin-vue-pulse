@@ -27,9 +27,11 @@ export type { ReactivityGraphPluginOptions } from './component-plugin.js';
  * Runtime discovery will later confirm/animate them.
  */
 export function loadStaticGraph(data: Partial<ReactivityGraphExport>): void {
-  // Index each static node by its scoped key (id minus the `static:` prefix) so the
-  // runtime tracer's claimId(`Comp::label`) reconciles onto it instead of duplicating.
-  for (const n of data.nodes || []) graph.addNode(n.id, n.label, n.kind, 'static', n.id.replace(/^static:/, ''));
+  // Static node ids are the SAME deterministic `Comp::label` ids the runtime
+  // tracer uses, so addNode dedups by id: whether the map is loaded before OR
+  // after the app mounts, each declaration is ONE node (origin flips static→runtime
+  // when the runtime confirms it). No reconciliation, no duplicates.
+  for (const n of data.nodes || []) graph.addNode(n.id, n.label, n.kind, 'static');
   for (const e of data.edges || []) graph.addEdge(e.from, e.to, e.key, 'static', e.kind ?? 'read');
 }
 

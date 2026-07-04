@@ -13,9 +13,11 @@ Two layers, one graph:
 | **static** | the *map*: which reactive monitors which, from source alone | `src/static/analyze.ts` (our analyzer; oxc-based) |
 | **runtime** | the *traffic*: which change actually fired which effect, live | `src/reactivity-graph/` (tracer + render tracker + overlay) |
 
-Both emit the **same node/edge schema** (`src/reactivity-graph/types.ts`) and
-reconcile **by (component-scoped) label**, so the static graph is drawn first
-(dashed) and the same nodes glow when runtime confirms them.
+Both emit the **same node/edge schema** (`src/reactivity-graph/types.ts`) with the
+**same deterministic node id per declaration** (`Comp::label`), so they dedup to
+one node each — the static graph is drawn first (dashed) and the very same node
+glows when runtime confirms it. One declaration → one id → one node, whichever
+side sees it first (no label-matching reconciliation, no duplicates).
 
 ## Install & use
 

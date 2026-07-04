@@ -21,8 +21,6 @@ type ScheduleFn = (fn: () => void, ms: number) => void;
 
 export class ReactivityGraph {
   nodes = new Map<string, GraphNode>();
-  /** index key (scoped label) -> node id (for static/runtime reconciliation) */
-  labelIndex = new Map<string, string>();
   /**
    * Reference count per node id. A node can be seeded by the static pass and then
    * confirmed by 1..N runtime call-sites / component instances. removeNode only
@@ -48,11 +46,13 @@ export class ReactivityGraph {
   }
 
   /**
-   * @param indexKey key used for static<->runtime reconciliation. Defaults to
-   *   `label`; the tracer passes a component-scoped key (`Comp::count`) so that
-   *   two components each declaring `count` do NOT collapse into one node.
+   * The node `id` IS the identity: a deterministic key derived from the
+   * declaration (`Comp::label` at runtime, the same string statically). One
+   * declaration → one id → one node. The static pass and the runtime tracer both
+   * address a node by that id, so they dedup here regardless of load order — no
+   * label-matching reconciliation, no duplicates.
    */
-  addNode(id: string, label: string, kind: NodeKind, origin: Origin = 'runtime', indexKey: string = label): GraphNode {
+  addNode(id: string, label: string, kind: NodeKind, origin: Origin = 'runtime'): GraphNode {
     const existing = this.nodes.get(id);
     if (existing) {
       this.refs.set(id, (this.refs.get(id) || 0) + 1);
@@ -62,19 +62,8 @@ export class ReactivityGraph {
     const node: GraphNode = { id, label, kind, origin };
     this.nodes.set(id, node);
     this.refs.set(id, 1);
-    if (!this.labelIndex.has(indexKey)) this.labelIndex.set(indexKey, id);
     this.emit({ type: 'node', node });
     return node;
-  }
-
-  /**
-   * Return the id of an already-known node with this index key (e.g. one seeded
-   * by the static analyzer under the same component-scoped key), so the runtime
-   * tracer can reuse it and light up the same node instead of creating a
-   * duplicate. Returns undefined if unseen.
-   */
-  claimId(indexKey: string): string | undefined {
-    return this.labelIndex.get(indexKey);
   }
 
   /**
@@ -93,9 +82,6 @@ export class ReactivityGraph {
     for (const [k, e] of this.edges) {
       if (e.from === id || e.to === id) { this.edges.delete(k); this.emit({ type: 'remove-edge', edge: e }); }
     }
-    if (this.labelIndex.get(node.label) === id) this.labelIndex.delete(node.label);
-    // labelIndex may be keyed by a scoped key too; sweep any stale mapping to this id.
-    for (const [key, mapped] of this.labelIndex) if (mapped === id) this.labelIndex.delete(key);
     this.lastCascade.delete(id);
     this.emit({ type: 'remove-node', nodeId: id });
     return true;
@@ -201,7 +187,6 @@ export class ReactivityGraph {
   reset(): void {
     this.nodes.clear();
     this.edges.clear();
-    this.labelIndex.clear();
     this.refs.clear();
     this.lastCascade.clear();
     this.emit({ type: 'reset' });

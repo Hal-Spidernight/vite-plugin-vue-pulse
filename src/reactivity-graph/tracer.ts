@@ -27,8 +27,6 @@ import { graph } from './graph.js';
 import { ensureComponentNode, providedNodes, keyToString } from './component-scope.js';
 import type { NodeKind } from './types.js';
 
-let seq = 0;
-
 /**
  * Component scope of the current call, derived from the active component instance
  * (traced wrappers run during a component's `setup`). Used to namespace node
@@ -46,16 +44,17 @@ function scopeOf(): string {
 }
 
 /**
- * Register (or reuse) a node for `label`, scoped to the current component, and
- * arrange teardown: when the owning effect scope (component setup / effectScope)
- * is disposed, drop our reference so an unmounting component doesn't leak the
- * graph. Returns the node id (reused from the static map when seeded).
+ * Register a node for `label`, scoped to the current component. The id is the
+ * DECLARATION's deterministic identity (`Comp::label`, or bare `label` outside a
+ * component) — the exact same string the static analyzer emits — so the static
+ * map and this runtime node dedup to ONE node in the graph store (see
+ * `graph.addNode`), no matter which is created first. Also arranges teardown:
+ * when the owning effect scope is disposed, drop our reference.
  */
 function registerNode(kind: NodeKind, label: string): string {
   const scope = scopeOf();
-  const indexKey = scope ? `${scope}::${label}` : label;
-  const id = graph.claimId(indexKey) || `${kind}:${++seq}`;
-  graph.addNode(id, label, kind, 'runtime', indexKey);
+  const id = scope ? `${scope}::${label}` : label;
+  graph.addNode(id, label, kind, 'runtime');
   try { if (getCurrentScope()) onScopeDispose(() => graph.removeNode(id)); } catch { /* no active scope */ }
   return id;
 }
