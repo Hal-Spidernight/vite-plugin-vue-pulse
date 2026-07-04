@@ -80,14 +80,42 @@ const ALPHA_DECAY = 0.0228;    // reaches ALPHA_MIN from 1 in ~170 steps
 const ALPHA_MIN = 0.02;
 const VELOCITY_DECAY = 0.7;    // keep 70% of velocity per step (damping)
 const GOLDEN_ANGLE = 2.399963229728653;
-// pull toward the same-scope centroid so a component's declarations cluster
-// inside its boundary hull (weak vs. the 2600 repulsion — clusters, not clumps)
-const CLUSTER_PULL = 0.03;
-// keep DIFFERENT boundaries visibly apart: cross-scope pairs repel harder and
-// cross-boundary springs relax to a longer rest length than intra-scope ones
-const CROSS_SCOPE_REPULSION = 2.4;
-const SPRING_REST = 120;
-const CROSS_SCOPE_REST = 230;
+/**
+ * Tunable force weights. The layout aims for a BALANCE the tool wants: component
+ * hulls compact and just-separated (not flung apart), and nodes inside a hull
+ * spaced enough to read individually (not crammed). Exposed with sensible
+ * defaults so that balance can be adjusted/swept without editing the sim; pass a
+ * partial override to `createForceLayout(w, h, tune)`.
+ */
+export interface LayoutTuning {
+  /** base inverse-square repulsion between every pair of bodies (node spacing) */
+  repulsion: number;
+  /** pull of each scoped body toward its component's centroid (hull compactness) */
+  clusterPull: number;
+  /** repulsion ×multiplier for SAME-boundary pairs (<1 → a component's nodes cluster) */
+  sameScopeRepulsion: number;
+  /** repulsion ×multiplier for pairs in DIFFERENT boundaries (>1 → hulls push apart) */
+  crossScopeRepulsion: number;
+  /** spring rest length for intra-boundary edges */
+  springRest: number;
+  /** spring rest length for cross-boundary edges (longer so linked hulls don't collide) */
+  crossScopeRest: number;
+  /** clearance two hulls are separated to once their bounding spheres come close */
+  interClusterGap: number;
+  /** strength of the inter-cluster separation push (∝ overlap, alpha-scaled) */
+  interClusterPush: number;
+}
+
+export const DEFAULT_TUNING: LayoutTuning = {
+  repulsion: 2600,
+  clusterPull: 0.08,          // gentle cohesion → nodes stay spaced, not crammed
+  sameScopeRepulsion: 0.9,    // nearly full within-scope repulsion → readable node spacing
+  crossScopeRepulsion: 1.6,   // components separate but stay near neighbours
+  springRest: 145,            // roomy intra-boundary edges → larger, legible hulls
+  crossScopeRest: 170,
+  interClusterGap: 24,        // just enough clearance that hulls don't deeply overlap
+  interClusterPush: 0.38,
+};
 
 // margin between the bounding sphere and the panel edge (in px)
 const NODE_MARGIN = 40;
@@ -195,7 +223,8 @@ export interface ForceLayout {
   step(): void;
 }
 
-export function createForceLayout(width: number, height: number): ForceLayout {
+export function createForceLayout(width: number, height: number, tune: Partial<LayoutTuning> = {}): ForceLayout {
+  const T: LayoutTuning = { ...DEFAULT_TUNING, ...tune };
   const bodies = new Map<string, Body>();
   const springs: Spring[] = [];
   let w = width, h = height;
@@ -262,9 +291,14 @@ export function createForceLayout(width: number, height: number): ForceLayout {
           const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
           const d2 = dx * dx + dy * dy + dz * dz || 0.01; // coincident-point guard
           const d = Math.sqrt(d2);
-          // bodies in different boundaries repel harder → hulls separate visibly
-          const cross = a.scope !== b.scope && (a.scope || b.scope) ? CROSS_SCOPE_REPULSION : 1;
-          const f = cross * 2600 / d2 * alpha;
+          // bodies in DIFFERENT boundaries repel harder → hulls separate; bodies in
+          // the SAME boundary repel less → a component's nodes cluster. Only pairs
+          // where BOTH are scoped get the cross multiplier; anything involving a
+          // scopeless (global) node stays at the 1× base.
+          const scopeFactor = a.scope !== b.scope
+            ? ((a.scope && b.scope) ? T.crossScopeRepulsion : 1)
+            : (a.scope ? T.sameScopeRepulsion : 1);
+          const f = scopeFactor * T.repulsion / d2 * alpha;
           const ux = dx / d, uy = dy / d, uz = dz / d;
           a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
           b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
@@ -276,28 +310,57 @@ export function createForceLayout(width: number, height: number): ForceLayout {
         const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
         const d = Math.hypot(dx, dy, dz) || 0.01; // coincident-point guard
         // a cross-boundary edge relaxes longer so linked hulls don't collide
-        const rest = a.scope !== b.scope ? CROSS_SCOPE_REST : SPRING_REST;
+        const rest = a.scope !== b.scope ? T.crossScopeRest : T.springRest;
         const f = (d - rest) * 0.02 * alpha;
         const ux = dx / d, uy = dy / d, uz = dz / d;
         a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
         b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
       }
-      // scope clustering: pull each body toward its component's centroid so the
-      // boundary hulls come out compact and non-overlapping
-      const centroids = new Map<string, { x: number; y: number; z: number; n: number }>();
+      // scope clustering: (1) pull each body toward its component's centroid so
+      // each boundary hull comes out compact, then (2) push whole clusters apart
+      // so their hulls don't overlap. First pass — per-scope centroid, member
+      // list, and radius (max member distance to the centroid).
+      interface Cluster { cx: number; cy: number; cz: number; n: number; r: number; members: Body[] }
+      const centroids = new Map<string, Cluster>();
       for (const b of arr) {
         if (!b.scope) continue;
         let c = centroids.get(b.scope);
-        if (!c) centroids.set(b.scope, c = { x: 0, y: 0, z: 0, n: 0 });
-        c.x += b.x; c.y += b.y; c.z += b.z; c.n++;
+        if (!c) centroids.set(b.scope, c = { cx: 0, cy: 0, cz: 0, n: 0, r: 0, members: [] });
+        c.cx += b.x; c.cy += b.y; c.cz += b.z; c.n++; c.members.push(b);
       }
-      for (const b of arr) {
-        if (!b.scope) continue;
-        const c = centroids.get(b.scope)!;
+      for (const c of centroids.values()) {
+        c.cx /= c.n; c.cy /= c.n; c.cz /= c.n;
+        for (const b of c.members) {
+          const d = Math.hypot(b.x - c.cx, b.y - c.cy, b.z - c.cz);
+          if (d > c.r) c.r = d;
+        }
+      }
+      // (1) centroid cohesion — keeps a component's nodes together (gentle, so
+      // they stay spaced enough to read individually rather than cram into a dot)
+      for (const c of centroids.values()) {
         if (c.n < 2) continue;
-        b.vx += (c.x / c.n - b.x) * CLUSTER_PULL * alpha;
-        b.vy += (c.y / c.n - b.y) * CLUSTER_PULL * alpha;
-        b.vz += (c.z / c.n - b.z) * CLUSTER_PULL * alpha;
+        for (const b of c.members) {
+          b.vx += (c.cx - b.x) * T.clusterPull * alpha;
+          b.vy += (c.cy - b.y) * T.clusterPull * alpha;
+          b.vz += (c.cz - b.z) * T.clusterPull * alpha;
+        }
+      }
+      // (2) inter-cluster separation — any two scopes whose bounding spheres come
+      // within INTER_CLUSTER_GAP of touching push their members directly apart,
+      // ∝ the overlap and alpha-scaled (so it still cools to rest).
+      const cl = [...centroids.values()];
+      for (let i = 0; i < cl.length; i++) {
+        for (let j = i + 1; j < cl.length; j++) {
+          const A = cl[i], B = cl[j];
+          const dx = A.cx - B.cx, dy = A.cy - B.cy, dz = A.cz - B.cz;
+          const d = Math.hypot(dx, dy, dz) || 0.01; // coincident-centroid guard
+          const need = A.r + B.r + T.interClusterGap;
+          if (d >= need) continue;
+          const push = (need - d) * T.interClusterPush * alpha;
+          const ux = dx / d, uy = dy / d, uz = dz / d;
+          for (const b of A.members) { b.vx += ux * push; b.vy += uy * push; b.vz += uz * push; }
+          for (const b of B.members) { b.vx -= ux * push; b.vy -= uy * push; b.vz -= uz * push; }
+        }
       }
       for (const b of arr) {
         b.vx *= VELOCITY_DECAY; b.vy *= VELOCITY_DECAY; b.vz *= VELOCITY_DECAY;
@@ -554,7 +617,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       if (rm > Rmodel) Rmodel = rm;
     }
 
-    drawBoundaries(proj);
+    drawBoundaries(proj, Rmodel);
 
     // ONE depth-sorted list of edges + nodes + pulses so near occludes far
     const drawables: Drawable[] = [];
@@ -593,45 +656,55 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
    * scope's projected cluster, labeled with the component name. Drawn UNDER the
    * graph — a boundary is context, not a node. A re-render flashes it.
    */
-  function drawBoundaries(proj: Map<string, Proj>) {
-    interface Hull { sx: number; sy: number; n: number; r: number }
+  function drawBoundaries(proj: Map<string, Proj>, Rmodel: number) {
+    interface Hull { sx: number; sy: number; zr: number; n: number; r: number }
     const hulls = new Map<string, Hull>();
     for (const b of bodies.values()) {
       if (!b.scope || !bodyVisible(b)) continue;
       const p = proj.get(b.id);
       if (!p) continue;
       let hl = hulls.get(b.scope);
-      if (!hl) hulls.set(b.scope, hl = { sx: 0, sy: 0, n: 0, r: 0 });
-      hl.sx += p.sx; hl.sy += p.sy; hl.n++;
+      if (!hl) hulls.set(b.scope, hl = { sx: 0, sy: 0, zr: 0, n: 0, r: 0 });
+      hl.sx += p.sx; hl.sy += p.sy; hl.zr += p.zr; hl.n++;
     }
     for (const [scope, hl] of hulls) {
-      hl.sx /= hl.n; hl.sy /= hl.n;
+      hl.sx /= hl.n; hl.sy /= hl.n; hl.zr /= hl.n;
       for (const b of bodies.values()) {
         if (b.scope !== scope || !bodyVisible(b)) continue;
         const p = proj.get(b.id);
         if (!p) continue;
-        const d = Math.hypot(p.sx - hl.sx, p.sy - hl.sy) + 14 * p.scale;
+        const d = Math.hypot(p.sx - hl.sx, p.sy - hl.sy) + 20 * p.scale;
         if (d > hl.r) hl.r = d;
       }
-      hl.r = Math.max(hl.r + 12, 26);
+      hl.r = Math.max(hl.r + 18, 42);
     }
-    // larger hulls first so overlapping smaller ones stay legible
-    const sorted = [...hulls.entries()].sort((a, b) => b[1].r - a[1].r);
+    // depth-sort back-to-front (far/low zr first, near last on top) so a near
+    // boundary occludes a far one — matching the node ordering — and fog-fade the
+    // static context so overlapping hulls read as DEPTH, not a flat tangle. A
+    // re-render flash is added ON TOP of the fade, so activity pops at any depth.
+    const sorted = [...hulls.entries()].sort((a, b) => a[1].zr - b[1].zr);
     for (const [scope, hl] of sorted) {
+      const fog = clamp01(0.5 - 0.5 * hl.zr / Rmodel); // 0 near .. 1 far
+      const vis = 1 - 0.75 * fog;                      // near crisp, far recedes
       const flash = scopeFlash.get(scope) || 0;
       ctx.beginPath();
-      ctx.fillStyle = scopeColor(scope, 0.05 + 0.14 * flash);
+      ctx.fillStyle = scopeColor(scope, 0.05 * vis + 0.14 * flash);
       ctx.arc(hl.sx, hl.sy, hl.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.lineWidth = 1 + flash;
-      ctx.strokeStyle = scopeColor(scope, 0.30 + 0.55 * flash);
+      ctx.strokeStyle = scopeColor(scope, 0.30 * vis + 0.55 * flash);
       ctx.setLineDash([6, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = scopeColor(scope, 0.65 + 0.35 * flash);
-      ctx.font = '10px ui-monospace, monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`⟨${scope}⟩`, hl.sx, hl.sy - hl.r - 4);
+      // label only on near/front hulls (declutter when many boundaries overlap),
+      // fading out toward the mid-depth cutoff
+      if (fog < 0.5) {
+        const lf = clamp01((0.5 - fog) / 0.5);
+        ctx.fillStyle = scopeColor(scope, 0.65 * lf + 0.35 * flash);
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(`⟨${scope}⟩`, hl.sx, hl.sy - hl.r - 4);
+      }
     }
   }
 

@@ -23,7 +23,7 @@ globalThis.requestAnimationFrame = (fn) => setTimeout(() => fn(0), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
 const { ReactivityGraph } = await import('../dist/reactivity-graph/graph.js');
-const { createForceLayout, mountOverlay, scopeColor } = await import('../dist/reactivity-graph/overlay.js');
+const { createForceLayout, mountOverlay, scopeColor, boundingRadius } = await import('../dist/reactivity-graph/overlay.js');
 
 let pass = 0, fail = 0;
 const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
@@ -78,6 +78,48 @@ const cA = centroid('A'), cB = centroid('B');
 const centroidDist = Math.hypot(cA.x - cB.x, cA.y - cB.y, cA.z - cB.z);
 ok(centroidDist > radius(cA) + radius(cB),
   `boundaries are separated, not overlapping (centroids ${centroidDist.toFixed(1)} apart > radii ${radius(cA).toFixed(1)} + ${radius(cB).toFixed(1)})`);
+
+console.log('[many boundaries stay separated in the 2D projection]');
+// The real fuzz case: dozens of tiny components at once. Tight clustering +
+// inter-cluster repulsion must keep the DRAWN hull circles mostly non-overlapping
+// (regression guard — a naive layout piles them: overlapRate was ~0.62 at 40 scopes).
+{
+  const W = 460, H = 360;
+  const many = createForceLayout(W, H);
+  let s = 12345; const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const kinds = ['ref', 'reactive', 'computed', 'watch', 'watchEffect'];
+  const groups = [];
+  for (let g = 0; g < 40; g++) {
+    const scope = 'C' + g, ids = [];
+    const n = 1 + Math.floor(rnd() * 4);
+    for (let i = 0; i < n; i++) { const id = `${scope}::n${i}`; many.addBody({ id, label: 'n' + i, kind: kinds[i % kinds.length], origin: 'runtime', scope }); ids.push(id); }
+    for (let i = 0; i < n - 1; i++) many.addSpring({ from: ids[i], to: ids[i + 1], origin: 'runtime', kind: 'read' });
+    groups.push(ids);
+  }
+  for (let g = 1; g < 40; g++) if (rnd() < 0.5) many.addSpring({ from: groups[g - 1][0], to: groups[g][0], origin: 'runtime', kind: 'read' });
+  let st = 0; while (!many.settled && st < 5000) { many.step(); st++; }
+  // project at the identity camera exactly like overlay draw() (zoom 1)
+  const cx = W / 2, cy = H / 2, Rb = boundingRadius(W, H), CAM = Rb * 2.6;
+  const proj = new Map();
+  for (const b of many.bodies.values()) { const sc = CAM / Math.max(CAM - b.z, 1); proj.set(b.id, { sx: cx + b.x * sc, sy: cy + b.y * sc, scale: sc }); }
+  // build one hull circle per scope with the same formula as drawBoundaries()
+  const hulls = new Map();
+  for (const b of many.bodies.values()) { const p = proj.get(b.id); let hl = hulls.get(b.scope); if (!hl) hulls.set(b.scope, hl = { sx: 0, sy: 0, n: 0, r: 0 }); hl.sx += p.sx; hl.sy += p.sy; hl.n++; }
+  for (const [scope, hl] of hulls) {
+    hl.sx /= hl.n; hl.sy /= hl.n;
+    for (const b of many.bodies.values()) { if (b.scope !== scope) continue; const p = proj.get(b.id); const d = Math.hypot(p.sx - hl.sx, p.sy - hl.sy) + 20 * p.scale; if (d > hl.r) hl.r = d; }
+    hl.r = Math.max(hl.r + 18, 42); // hull padding — keep in sync with drawBoundaries()
+  }
+  const H2 = [...hulls.values()];
+  let pairs = 0, over = 0, sumR = 0;
+  for (let i = 0; i < H2.length; i++) { sumR += H2[i].r; for (let j = i + 1; j < H2.length; j++) { pairs++; if (Math.hypot(H2[i].sx - H2[j].sx, H2[i].sy - H2[j].sy) < H2[i].r + H2[j].r) over++; } }
+  const rate = over / pairs, meanR = sumR / H2.length;
+  // guards the BALANCE the tool wants: far fewer overlaps than a naive layout
+  // (baseline was ~0.62 at 40 scopes) while hulls stay large/legible, NOT collapsed
+  // to tight dots (the first fix over-tightened; the user wanted bigger circles).
+  ok(rate < 0.40, `40 boundaries mostly don't overlap in projection (overlapRate ${rate.toFixed(3)} < 0.40, baseline ~0.62)`);
+  ok(meanR > 35, `boundary hulls stay large enough to read (mean hull radius ${meanR.toFixed(1)}px > 35, not collapsed)`);
+}
 
 console.log('[filter tag API + deterministic boundary colors]');
 const g2 = new ReactivityGraph();
