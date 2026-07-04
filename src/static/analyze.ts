@@ -1,35 +1,27 @@
 /**
- * Static reactivity analyzer — built on the REAL croquis / vize toolchain, not a
- * reimplementation.
+ * Static reactivity analyzer — the "map".
  *
- *   - SFC splitting:      `vize` (@vizejs/native) `parseSfc`  ← real croquis
- *   - script JS/TS AST:   `oxc-parser` `parseSync`            ← the same oxc croquis is built on
- *   - template deps:      croquis `parseTemplate` gives the tag tree but its napi
- *                         AST collapses nested children to counts, so template
- *                         binding-expressions are located from the template text
- *                         and parsed with the SAME oxc.
- *
- * The only bespoke layer is the effect-graph EDGE builder — i.e. which computed /
- * watch / watchEffect / template reads which reactive. That is exactly the piece
- * croquis does not expose (its `effect_graph.rs` has the model + `find_cycle` but
- * no builder — issue #695); everything upstream of it is the real croquis/oxc.
+ * Pipeline:
+ *   1. split the SFC into `<script>` / `<template>` with `@vizejs/native`'s
+ *      `parseSfc` (that's the ONLY thing vize is used for);
+ *   2. parse the `<script>` to an ESTree AST with `oxc-parser`;
+ *   3. walk it to collect reactive bindings and wire dependency edges — computed
+ *      getters / watch sources / watchEffect bodies (reads), watch-callback
+ *      assignments (writes), and template expressions → the component node.
  *
  * Emits the SAME node/edge shape the runtime tracer uses (see
  * `../reactivity-graph/types.ts`), so the static "map" and the live "traffic"
  * overlay onto one graph, reconciled by label.
  */
 import { parseSync } from 'oxc-parser';
-import * as vize from '@vizejs/native';
+import { parseSfc } from '@vizejs/native';
 import type { NodeKind, EdgeKind, ReactivityGraphExport } from '../reactivity-graph/types.js';
-
-const parseSfc = (vize as any).parseSfc;
 
 type AnyNode = any;
 interface Binding { id: string; kind: string }
 interface Read { label: string; key?: string }
 
-// Recognises both the real Vue factories (what croquis targets in production
-// code) and this devtool's traced wrappers (what the demo uses).
+// Recognises both the real Vue factories and this devtool's traced wrappers.
 const REACTIVE_FACTORY: Record<string, string> = {
   ref: 'ref', shallowRef: 'ref', toRef: 'ref', customRef: 'ref',
   reactive: 'reactive', shallowReactive: 'reactive',
@@ -47,7 +39,7 @@ const WATCHEFFECT_NAMES = new Set(['watchEffect', 'tracedWatchEffect', 'watchPos
 /** array/collection mutating methods -> a write to the receiver binding */
 const MUTATING_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'fill', 'copyWithin', 'set', 'add', 'delete', 'clear']);
 
-/** Parse JS/TS to an ESTree program with the real oxc (croquis's parser). */
+/** Parse JS/TS to an ESTree program with oxc. */
 function parseModule(code: string): AnyNode {
   const r = parseSync('module.ts', code, { sourceType: 'module', lang: 'ts' });
   const program: any = (r as any).program;
@@ -58,60 +50,8 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): ReactivityGra
   const desc: AnyNode = parseSfc(source, { filename });
   // Analyze BOTH <script setup> and a plain <script> (defineOptions/name pattern).
   const parts = [desc?.scriptSetup?.content, desc?.script?.content].filter(Boolean) as string[];
-  const script = parts.join('\n');
   const componentLabel = `<${String(filename).split('/').pop()!.replace(/\.\w+$/, '')}>`;
-
-  // Prefer the REAL croquis effect-graph builder when the installed
-  // @vizejs/native exposes it (analyzeReactivity, added upstream for issue #695):
-  // nodes + edges come straight from croquis, and this file is just the adapter.
-  // Falls back to the local oxc analyzer when the napi isn't available yet.
-  const analyzeReactivity = (vize as any).analyzeReactivity;
-  if (typeof analyzeReactivity === 'function') {
-    try {
-      return adaptCroquisGraph(analyzeReactivity(script), { template: desc?.template?.content, componentLabel });
-    } catch { /* fall through to the local analyzer */ }
-  }
-  return analyzeScript(script, { template: desc?.template?.content, componentLabel });
-}
-
-/**
- * Adapt croquis' `analyzeReactivity` output ({nodes,edges,cycle}) to our graph
- * schema. Croquis authoritatively classifies the nodes and wires script edges;
- * template→component edges are added here (croquis' builder is script-only).
- */
-function adaptCroquisGraph(g: any, opts: AnalyzeOptions = {}): ReactivityGraphExport {
-  const nodeId = (label: string) => `static:${label}`;
-  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static' }> = [];
-  const seenNode = new Set<string>();
-  const bindings = new Map<string, Binding>();
-  for (const n of g.nodes || []) {
-    if (seenNode.has(n.id ?? n.label)) continue;
-    seenNode.add(n.id ?? n.label);
-    nodes.push({ id: nodeId(n.label), label: n.label, kind: n.kind as NodeKind, origin: 'static' });
-    bindings.set(n.label, { id: nodeId(n.label), kind: n.kind });
-  }
-  const edges = new Map<string, { from: string; to: string; key?: string; origin: 'static'; kind: EdgeKind }>();
-  const addEdge = (from: string, toId: string, key: string | undefined, kind: EdgeKind) => {
-    if (from === toId) return;
-    const k = `${from}->${toId}${key ? '#' + key : ''}#${kind}`;
-    if (!edges.has(k)) edges.set(k, { from, to: toId, key, origin: 'static', kind });
-  };
-  for (const e of g.edges || []) addEdge(nodeId(e.from), nodeId(e.to), undefined, (e.kind || 'read') as EdgeKind);
-
-  // template deps -> component render node (same oxc pass as the fallback path)
-  if (opts.template) {
-    const compLabel = opts.componentLabel || '<Component>';
-    let created = false;
-    for (const expr of templateExpressions(opts.template)) {
-      let sub: AnyNode;
-      try { sub = parseModule(`(${expr});`); } catch { continue; }
-      for (const dep of readsIn(sub, bindings)) {
-        if (!created) { nodes.push({ id: nodeId(compLabel), label: compLabel, kind: 'component', origin: 'static' }); created = true; }
-        addEdge(nodeId(dep.label), nodeId(compLabel), dep.key, 'read');
-      }
-    }
-  }
-  return { nodes, edges: [...edges.values()] };
+  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, componentLabel });
 }
 
 export interface AnalyzeOptions {
@@ -321,9 +261,7 @@ function rootIdentifier(member: AnyNode): AnyNode {
 /**
  * Locate binding-expression regions in template text: mustaches `{{ … }}` and
  * dynamic attribute/directive values (`:x="…"`, `v-if="…"`, `@e="…"`). Minimal
- * region-location only — the expressions themselves are parsed by real oxc.
- * (croquis `parseTemplate` exposes the tag tree but its napi AST collapses nested
- * children to counts, so expression bodies aren't walkable through it.)
+ * region-location only — the expressions themselves are parsed by oxc.
  */
 function templateExpressions(tpl: string): string[] {
   const out: string[] = [];

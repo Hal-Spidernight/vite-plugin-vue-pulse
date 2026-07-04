@@ -1,9 +1,9 @@
 /**
  * Shared node/edge schema — the single source of truth for the graph shape.
  *
- * The runtime tracer and the static analyzer (`../static/analyze.ts`, built on the
- * real vize/croquis + oxc) both emit this exact shape, so the static "map" and the
- * live "traffic" reconcile onto one graph. Keep them in sync against this file.
+ * The runtime tracer and the static analyzer (`../static/analyze.ts`) both emit
+ * this exact shape, so the static "map" and the live "traffic" reconcile onto one
+ * graph. Keep them in sync against this file.
  */
 
 export type NodeKind = 'ref' | 'reactive' | 'computed' | 'watch' | 'watchEffect' | 'component';

@@ -6,8 +6,8 @@ Continuation notes for picking this up in Claude Code.
 A dev-only **Vite plugin** (`vite-plugin-vue-pulse`) that visualizes causal
 relationships between Vue reactives (ref/reactive/computed/watch/watchEffect + the
 component **render effect**) and lights the graph up as changes propagate at
-runtime. Two layers on one graph model: **static** ("map", from source via real
-croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
+runtime. Two layers on one graph model: **static** ("map", from source) +
+**runtime** ("traffic", live), reconciled by component-scoped label.
 
 ## Status — done & verified (11 suites, all green; `tsc` build clean)
 - **Full TypeScript**, builds to `dist/` (.js + .d.ts). Publishable `package.json`
@@ -16,23 +16,18 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
   the packaged runtime), never a consumer `/src/...` path. `enforce:'post'`,
   broadened entry regex, HMR-invalidated static module. Verified by `e2e_vite`
   (real dev server + plugin-vue ordering).
-- **Static analysis uses the REAL croquis/vize toolchain** — `@vizejs/native`
-  `parseSfc` + `oxc-parser` for the script/template expressions. Babel and
-  @vue/compiler-sfc were removed.
-- **The effect-graph builder (#695) is now implemented UPSTREAM in vize_croquis**
-  (local checkout `~/Documents/workspace-hal/vue2-vize/vize`, uncommitted — ready
-  to PR): `crates/vize_croquis/src/effect_graph_builder.rs` builds nodes (from
-  croquis' `reactivity.sources()`) + read/write edges (oxc walk of computed
-  getters / watch sources / watchEffect bodies) + `find_cycle`; exposed as the
-  `analyzeReactivity` napi in `crates/vize_vitrine/src/napi/sfc/reactivity.rs`.
-  cargo-tested (2 Rust tests incl. two-way-sync cycle) and verified end-to-end via
-  the built `.node` on the real playground `App.vue`.
-- **The plugin's `analyze.ts` is now an ADAPTER**: it calls croquis'
-  `analyzeReactivity` when the installed `@vizejs/native` exposes it (adapting
-  `{nodes,edges,cycle}` + adding template→component edges), and falls back to the
-  bundled oxc analyzer otherwise. The published `@vizejs/native@0.276` lacks it, so
-  the fallback runs today; it auto-upgrades once a napi build with
-  `analyzeReactivity` ships.
+- **Static analysis** (`src/static/analyze.ts`): splits the SFC with
+  `@vizejs/native`'s `parseSfc` (the ONLY use of vize), parses the `<script>` with
+  `oxc-parser`, and builds the dependency edges itself — computed getters / watch
+  sources / watchEffect bodies (reads), watch-callback assignments (writes), and
+  template expressions → the component node. Babel and @vue/compiler-sfc removed.
+  `parseSfc` is swappable for `@vue/compiler-sfc`; vize is not otherwise involved.
+  - NB: an experiment to push the edge-building UPSTREAM into vize_croquis (a Rust
+    `effect_graph_builder` + an `analyzeReactivity` napi) was prototyped locally in
+    `~/Documents/workspace-hal/vue2-vize/vize` (uncommitted) — but it is NOT part
+    of this plugin. vize issue #695 (cycle detection) is already CLOSED, so any such
+    contribution would need a fresh Issue + maintainer buy-in first, and it's
+    largely our own convenience — treat the local prototype as throwaway.
 - **`playground/`** is a separate sample Vue app (workspace member) that consumes
   the plugin **by package name**; it's the live demo and the e2e integration
   target. (The old `standalone-demo.html` and the `croquis-rust/` Rust clone were
@@ -52,20 +47,17 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
 ## Decisions locked in
 - Delivery: distributable **TypeScript Vite plugin** (`tsc` → dist), runtime shipped
   in-package and injected via a virtual module.
-- Static: **use real croquis (`vize`) + oxc**, not a JS clone. Effect-graph builder
-  stays ours (croquis doesn't expose one — #695).
+- Static: split the SFC with vize `parseSfc`, parse with `oxc`, build the edges
+  ourselves. (vize is used only as the SFC parser; the graph logic is ours.)
 - watch/watchEffect stay **nodes** + write-edges; reactive granularity **object-level**
   node + keyed edges; global capture via **build-time transform** + the render plugin
   (the render effect is the one thing the transform can't reach).
 
 ## Next steps (optional)
-1. Upstream the effect-graph edge builder into `vize_croquis` so the static graph
-   comes straight from croquis (then `analyze.ts` becomes a thin adapter). Reuse
-   its `find_cycle` to surface cyclic-computed warnings.
-2. Cross-file props/provide-inject static edges via `vize_croquis_cf`'s DependencyGraph.
-3. Pinia/VueUse first-class labeling (state=reactive, getters=computed, actions=writes)
+1. Cross-file props / provide-inject static edges.
+2. Pinia/VueUse first-class labeling (state=reactive, getters=computed, actions=writes)
    instead of generic `⟨ext⟩` nodes.
-4. `@vue/devtools-api` inspector/timeline; Barnes-Hut for very large graphs.
+3. `@vue/devtools-api` inspector/timeline; Barnes-Hut for very large graphs.
 
 ## Run
 ```
@@ -79,7 +71,8 @@ npm run analyze    # static graph JSON + Mermaid for playground/src/App.vue
 ## Gotchas
 - Vue debugger hooks (onTrack/onTrigger/renderTracked/renderTriggered) are DEV-ONLY.
 - The plugin is `apply:'serve'` — absent from `vite build` by design.
-- Static analysis pulls native deps (`@vizejs/native`, `oxc-parser`); Node-side only.
+- The static analyzer pulls two native deps, Node-side only: `oxc-parser` and
+  `@vizejs/native` (used solely for `parseSfc`).
 - `customRef` can't attribute incoming edges (Vue hides the target).
 - Deep-write capture only records edges while inside a traced effect (Vue's own
   sync-tracking boundary; post-`await` writes aren't attributed).

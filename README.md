@@ -10,7 +10,7 @@ Two layers, one graph:
 
 | layer | what it gives you | where |
 |-------|-------------------|-------|
-| **static** | the *map*: which reactive monitors which, from source alone | `src/static/analyze.ts` — built on the real **croquis / vize** toolchain |
+| **static** | the *map*: which reactive monitors which, from source alone | `src/static/analyze.ts` (our analyzer; oxc-based) |
 | **runtime** | the *traffic*: which change actually fired which effect, live | `src/reactivity-graph/` (tracer + render tracker + overlay) |
 
 Both emit the **same node/edge schema** (`src/reactivity-graph/types.ts`) and
@@ -66,34 +66,25 @@ computed setter / effect body (`effect → reactive`) are amber, so two-way
 bindings show up as real loops.
 
 **Circular reactivity** is handled: two-way `watch` sync converges (no runaway),
-and the propagation ripple has a visited-guard so cyclic chains don't hang. (True
-cycle *detection*/reporting — `find_cycle` — lives in the test fixture today and
-would live in `vize_croquis`'s `find_cycle`, not the shipped JS runtime.)
+and the propagation ripple has a visited-guard so cyclic chains don't hang.
 
 **Lifecycle:** node identity is component-scoped (`Comp::count`), so two
 components that both declare `count` stay distinct; nodes are removed on
 `onScopeDispose` / component unmount, so long-running SPAs don't leak the graph.
 
-## Static analysis (the "map") — powered by real croquis
+## Static analysis (the "map")
 
-The static analyzer is **not a hand-rolled clone**. It uses the actual
-`vize` / croquis toolchain:
+The static analyzer:
 
-- **SFC splitting** → `@vizejs/native` `parseSfc` (real croquis)
-- **`<script>` AST** → `oxc-parser` (the same oxc croquis is built on)
-- **template deps** → binding expressions located in the template text and parsed
-  with the same oxc (croquis `parseTemplate` exposes the tag tree but its napi AST
-  collapses nested children to counts, so expression bodies aren't walkable
-  through it)
+- splits the SFC into `<script>` / `<template>` with `@vizejs/native`'s `parseSfc`
+  (a fast Rust SFC parser — the ONLY thing the vize dependency is used for);
+- parses the `<script>` to an AST with `oxc-parser`;
+- walks it to collect reactive bindings and wire the dependency edges — computed
+  getters / watch sources / watchEffect bodies (reads), watch-callback assignments
+  (writes), and template expressions → the component node.
 
-The **effect-graph edge builder** — which computed / watch reads which reactive —
-is the piece croquis historically didn't expose (`effect_graph.rs` shipped the
-model + `find_cycle` but no builder, issue #695). That builder is now implemented
-**upstream in `vize_croquis`** (`effect_graph_builder.rs`) and exposed as the
-`analyzeReactivity` napi. When the installed `@vizejs/native` provides it, this
-plugin's analyzer is a thin **adapter** over croquis' own `{nodes, edges, cycle}`
-(nodes classified by croquis, cycles from croquis' `find_cycle`); otherwise it
-falls back to the bundled oxc analyzer. Either way you get the same graph shape.
+The edge-building logic is entirely in this plugin. (`parseSfc` is easily
+swappable for `@vue/compiler-sfc` if you'd rather not pull a native dependency.)
 
 ```bash
 npm run analyze                          # {nodes,edges} JSON + Mermaid for playground/src/App.vue
@@ -138,7 +129,7 @@ Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 - `deep_writes` — nested / array / `Map`/`Set` write capture + `toRef` linkage (vs real Vue).
 - `component_render` — render-effect tracking, component-scoped identity (no cross-component collision), unmount teardown (real client mount).
 - `cross_component` — parent→child + props flow + provide/inject DI edges (real client mount).
-- `static` — the croquis+oxc analyzer recovers the demo's causal + template edges from source.
+- `static` — the analyzer recovers the demo's causal + template edges from source.
 - `transform` — the build-time codemod turns plain Vue into a live graph.
 - `plugin` / `e2e_vite` — the Vite plugin's virtual modules + auto-inject, and a **real dev-server end-to-end** run (plugin-vue ordering, decoupled virtual-runtime injection).
 
@@ -155,7 +146,7 @@ src/reactivity-graph/
   overlay.ts       canvas force-graph: glow + pulses (pauses when collapsed/hidden)
   index.ts         mountPanel(), loadStaticGraph(), re-exports (the ./runtime entry)
 src/static/
-  analyze.ts       static analyzer (vize.parseSfc + oxc + effect-graph builder)
+  analyze.ts       static analyzer (parseSfc splits the SFC, oxc parses, we build the edges)
   transform.ts     build-time codemod: ref/reactive/... -> traced (oxc-based)
   cli.ts           CLI -> JSON + Mermaid
 playground/        sample Vue app consuming the plugin by name (demo + e2e target)
@@ -168,10 +159,9 @@ playground/        sample Vue app consuming the plugin by name (demo + e2e targe
   including a real Vite dev-server e2e.
 - The plugin is dev-server-only (`apply: 'serve'`); it is intentionally absent
   from `vite build`.
-- Cycle **detection** (`find_cycle`) lives in the test fixture (`scale_cycle`)
-  today, not the shipped JS runtime (which only guards the ripple against
-  looping); it belongs in `vize_croquis`'s `find_cycle` when the builder is
-  upstreamed.
-- Static analysis depends on native packages (`@vizejs/native`, `oxc-parser`);
-  these are used Node-side by the plugin/analyzer only — the browser runtime bundle
-  does not import them.
+- The runtime only guards the propagation ripple against looping (visited-guard);
+  it does not detect/report cycles. A DFS cycle-detector exists as a test fixture
+  (`scale_cycle`).
+- The static analyzer depends on two native packages, both Node-side only (the
+  browser runtime bundle imports neither): `oxc-parser` (parses the script), and
+  `@vizejs/native` — used solely for `parseSfc` to split the SFC.

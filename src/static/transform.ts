@@ -11,8 +11,7 @@
  *   watch(src, cb)                   ->  __RG.tracedWatch(src, cb, {}, "watch@L12")
  *   watchEffect(fn)                  ->  __RG.tracedWatchEffect(fn, "watchEffect@L14")
  *
- * Parsed with the real oxc (`oxc-parser`, the same engine croquis is built on) —
- * not a Babel reimplementation. Only identifiers actually imported from
+ * Parsed with `oxc-parser`. Only identifiers actually imported from
  * 'vue' / '@vue/reactivity' are touched, so unrelated locals named `ref` are safe.
  * oxc spans are UTF-16 offsets, so string slicing stays correct with non-ASCII source.
  */
