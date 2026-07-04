@@ -1,0 +1,46 @@
+// Write-edges from watch callbacks (arg 2) and computed setters.
+import { nextTick } from 'vue';
+import { graph } from '../src/reactivity-graph/graph.js';
+import { tracedRef, tracedComputed, tracedWatch } from '../src/reactivity-graph/tracer.js';
+
+let pass = 0, fail = 0;
+const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const lbl = (id) => graph.nodes.get(id)?.label;
+const hasEdge = (f, t, k) => [...graph.edges.values()].some((e) => lbl(e.from) === f && lbl(e.to) === t && (!k || e.kind === k));
+
+// --- writable computed: getter reads, setter writes -----------------------
+const first = tracedRef('Ada', 'first');
+const last = tracedRef('Lovelace', 'last');
+const fullName = tracedComputed({
+  get: () => `${first.value} ${last.value}`,
+  set: (v) => { const [f, l] = v.split(' '); first.value = f; last.value = l; },
+}, 'fullName');
+
+// --- watch whose callback (arg 2) writes another reactive -----------------
+const source = tracedRef(1, 'source');
+const mirror = tracedRef(0, 'mirror');
+tracedWatch(source, (v) => { mirror.value = v * 10; }, {}, 'mirrorWatch');
+
+async function main() {
+  await nextTick();
+  void fullName.value; // prime getter reads
+
+  console.log('[read edges]');
+  ok(hasEdge('first', 'fullName', 'read'), 'first -> fullName (read, getter)');
+  ok(hasEdge('last', 'fullName', 'read'), 'last -> fullName (read, getter)');
+  ok(hasEdge('source', 'mirrorWatch', 'read'), 'source -> mirrorWatch (read, watch source)');
+
+  fullName.value = 'Grace Hopper'; // trigger computed setter
+  source.value = 5;               // trigger watch callback write
+  await nextTick();
+
+  console.log('[write edges]');
+  console.log('  ', [...graph.edges.values()].filter((e) => e.kind === 'write').map((e) => `${lbl(e.from)}->${lbl(e.to)}`).join(', '));
+  ok(hasEdge('fullName', 'first', 'write'), 'fullName -> first (write, computed setter)');
+  ok(hasEdge('fullName', 'last', 'write'), 'fullName -> last (write, computed setter)');
+  ok(hasEdge('mirrorWatch', 'mirror', 'write'), 'mirrorWatch -> mirror (write, watch callback / arg 2)');
+
+  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
+}
+main();

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vue reactivity graph — standalone demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b1220; color: #e5e7eb; font: 14px system-ui, sans-serif; }
+  header { padding: 18px 22px; border-bottom: 1px solid #1e293b; }
+  header h1 { margin: 0 0 4px; font-size: 18px; }
+  header p { margin: 0; color: #94a3b8; font-size: 13px; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 0; height: calc(100vh - 66px); }
+  .controls { padding: 18px 22px; border-right: 1px solid #1e293b; overflow: auto; }
+  .grp { margin-bottom: 18px; }
+  .grp h2 { font-size: 13px; margin: 0 0 4px; color: #cbd5e1; }
+  .grp code { display:block; font-size: 11px; color: #a78bfa; margin-bottom: 8px; font-family: ui-monospace, monospace; }
+  button { border: 1px solid #334155; background: #1e293b; color: #e5e7eb; border-radius: 8px; padding: 6px 10px; cursor: pointer; margin: 0 6px 6px 0; }
+  button:hover { background: #334155; }
+  .val { color: #38bdf8; }
+  #graph { position: relative; }
+  canvas { display:block; }
+  .legend { position:absolute; left:14px; bottom:12px; display:flex; gap:12px; flex-wrap:wrap; font-size:12px; background:#0b1220cc; padding:8px 10px; border:1px solid #1e293b; border-radius:8px;}
+  .legend i { width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle;}
+</style>
+</head>
+<body>
+<header>
+  <h1>🕸 Vue reactivity graph — live propagation</h1>
+  <p>Click the buttons. Watch nodes glow and pulses travel along the causal edges (dependency → dependent). Edges & nodes are discovered automatically at runtime via Vue's onTrack/onTrigger.</p>
+</header>
+<main>
+  <div class="controls" id="controls"></div>
+  <div id="graph">
+    <div class="legend" id="legend"></div>
+  </div>
+</main>
+
+<script type="module">
+// IMPORTANT: this is the *development* browser build (vue.esm-browser.js, not
+// *.prod.js). Vue strips the onTrack/onTrigger debugger hooks from production
+// builds, so the graph would never light up otherwise. (Verified: this file
+// fires the hooks; the .prod.js file does not.)
+import { ref, shallowRef, reactive, computed, watch, watchEffect, nextTick } from 'https://unpkg.com/vue@3.5.13/dist/vue.esm-browser.js';
+
+/* ============================================================= graph store */
+class ReactivityGraph {
+  constructor(){ this.nodes=new Map(); this.labelIndex=new Map(); this.edges=new Map();
+    this.subs=new Set(); this.lastCascade=new Map(); this.cascadeDebounceMs=120; }
+  subscribe(fn){ this.subs.add(fn); return ()=>this.subs.delete(fn); }
+  emit(e){ for(const fn of this.subs) fn(e); }
+  addNode(id,label,kind,origin='runtime'){ const ex=this.nodes.get(id);
+    if(ex){ if(ex.origin==='static'&&origin==='runtime') ex.origin='runtime'; return ex; }
+    const n={id,label,kind,origin}; this.nodes.set(id,n);
+    if(!this.labelIndex.has(label)) this.labelIndex.set(label,id); this.emit({type:'node',node:n}); return n; }
+  claimId(label){ return this.labelIndex.get(label); }
+  addEdge(from,to,key,origin='runtime',kind='read'){ if(from===to) return;
+    const id=`${from}->${to}${key?'#'+key:''}#${kind}`; if(this.edges.has(id)) return;
+    const e={from,to,key,origin,kind}; this.edges.set(id,e); this.emit({type:'edge',edge:e}); }
+  glow(id){ if(!this.nodes.has(id)) return; this.emit({type:'glow',nodeId:id}); }
+  pulse(from,to){ this.emit({type:'pulse',from,to}); }
+  outgoing(id){ const o=[]; for(const e of this.edges.values()) if(e.from===id) o.push(e); return o; }
+  onTrigger(effectId, srcId){
+    // origin's direct dependent reports the source → one cascade drives the ripple.
+    if(srcId && this.nodes.has(srcId)) this.cascadeFrom(srcId);
+  }
+  // 変更元を起点に、依存先へ1レベルずつ時間差で連鎖的に発光させる
+  cascadeFrom(originId, step=320, travel=300){
+    const t=now(), last=this.lastCascade.get(originId);
+    if(last!=null && t-last<this.cascadeDebounceMs) return;
+    this.lastCascade.set(originId, t);
+    const visited=new Set([originId]); let frontier=[originId];
+    this.glow(originId);
+    const walk=()=>{ const next=[];
+      for(const id of frontier) for(const e of this.outgoing(id)){
+        if(visited.has(e.to)) continue; visited.add(e.to);
+        this.pulse(e.from, e.to); const target=e.to;
+        setTimeout(()=>this.glow(target), travel); next.push(target); }
+      if(next.length){ frontier=next; setTimeout(walk, step); } };
+    setTimeout(walk, 0);
+  }
+}
+const now=()=> (typeof performance!=='undefined'?performance.now():Date.now());
+const graph = new ReactivityGraph();
+
+/* ================================================================= tracer */
+let seq=0; const nid=(k,label)=> graph.claimId(label) || `${k}:${++seq}`;
+const tag=(o,id)=>{ try{ Object.defineProperty(o,'__vgId',{value:id,enumerable:false,configurable:true}); }catch{} return o; };
+const resolveT=(t)=> (t && typeof t==='object' && '__vgId' in t)? t.__vgId : undefined;
+const keyOf=(e)=> (e.key===undefined||e.key==='value')? undefined : String(e.key);
+// write detection: the effect currently running; its reactive writes -> write-edges
+let currentEffect=null;
+const runInEffect=(id,fn)=>{ const p=currentEffect; currentEffect=id; try{ return fn(); } finally{ currentEffect=p; } };
+const writeProxy=(obj,nodeId,isRefValue)=> new Proxy(obj,{
+  get:(t,k,r)=>Reflect.get(t,k,r),
+  set:(t,k,v,r)=>{ if(currentEffect && (isRefValue? k==='value' : typeof k!=='symbol'))
+    graph.addEdge(currentEffect,nodeId,isRefValue?undefined:String(k),'runtime','write'); return Reflect.set(t,k,v,r); }});
+const hooks=(id)=>({ onTrack(e){ const s=resolveT(e.target); if(s) graph.addEdge(s,id,keyOf(e),'runtime','read'); },
+                     onTrigger(e){ graph.onTrigger(id, resolveT(e.target)); } });
+const tracedRef=(v,l)=>{ const r=ref(v); const id=nid('ref',l); tag(r,id); graph.addNode(id,l,'ref'); return writeProxy(r,id,true); };
+const tracedReactive=(o,l)=>{ const id=nid('reactive',l); tag(o,id); const r=reactive(o); graph.addNode(id,l,'reactive'); return writeProxy(r,id,false); };
+const tracedComputed=(g,l)=>{ const id=nid('computed',l);
+  let arg=g; if(g&&typeof g==='object'&&typeof g.get==='function'){ const {get,set}=g; arg={get,set:typeof set==='function'?(v)=>runInEffect(id,()=>set(v)):undefined}; }
+  const c=computed(arg,hooks(id)); tag(c,id); graph.addNode(id,l,'computed'); return c; };
+const tracedWatch=(s,cb,o={},l='watch')=>{ const id=nid('watch',l); graph.addNode(id,l,'watch'); return watch(s,(...a)=>runInEffect(id,()=>cb(...a)),{...o,...hooks(id)}); };
+const tracedWatchEffect=(fn,l='watchEffect',o={})=>{ const id=nid('watchEffect',l); graph.addNode(id,l,'watchEffect'); return watchEffect((oc)=>runInEffect(id,()=>fn(oc)),{...o,...hooks(id)}); };
+
+/* ================================================================ overlay */
+const KIND={ ref:{c:'#38bdf8',r:'#7dd3fc'}, reactive:{c:'#a78bfa',r:'#c4b5fd'},
+  computed:{c:'#34d399',r:'#6ee7b7'}, watch:{c:'#fbbf24',r:'#fcd34d'}, watchEffect:{c:'#fb7185',r:'#fda4af'} };
+function mountOverlay(host){
+  const cv=document.createElement('canvas'); const ctx=cv.getContext('2d');
+  const dpr=Math.min(devicePixelRatio||1,2); let W=host.clientWidth, H=host.clientHeight||520;
+  function size(){ W=host.clientWidth; H=host.clientHeight; cv.width=W*dpr; cv.height=H*dpr; cv.style.width=W+'px'; cv.style.height=H+'px'; ctx.setTransform(dpr,0,0,dpr,0,0); }
+  host.appendChild(cv); size(); addEventListener('resize',size);
+  const B=new Map(), S=[], P=[];
+  const body=(n)=>{ if(B.has(n.id)) return B.get(n.id); const b={id:n.id,label:n.label,kind:n.kind,
+    x:W/2+(Math.random()-.5)*220, y:H/2+(Math.random()-.5)*220, vx:0,vy:0,glow:0}; B.set(n.id,b); return b; };
+  for(const n of graph.nodes.values()) body(n); for(const e of graph.edges.values()) S.push({...e});
+  graph.subscribe(ev=>{ if(ev.type==='node') body(ev.node);
+    else if(ev.type==='edge') S.push({...ev.edge});
+    else if(ev.type==='glow'){ const b=B.get(ev.nodeId); if(b) b.glow=1; }
+    else if(ev.type==='pulse') P.push({from:ev.from,to:ev.to,t:0}); });
+  const ease=t=> t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+  const hexA=(h,a)=>{const n=parseInt(h.slice(1),16);return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;};
+  function step(){ const A=[...B.values()], cx=W/2, cy=H/2;
+    for(const b of A){ b.vx+=(cx-b.x)*.0016; b.vy+=(cy-b.y)*.0016; }
+    for(let i=0;i<A.length;i++) for(let j=i+1;j<A.length;j++){ const a=A[i],b=A[j];
+      let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy||.01,d=Math.sqrt(d2),f=4200/d2,ux=dx/d,uy=dy/d;
+      a.vx+=ux*f;a.vy+=uy*f;b.vx-=ux*f;b.vy-=uy*f; }
+    for(const s of S){ const a=B.get(s.from),b=B.get(s.to); if(!a||!b) continue;
+      const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01,f=(d-140)*.02,ux=dx/d,uy=dy/d;
+      a.vx+=ux*f;a.vy+=uy*f;b.vx-=ux*f;b.vy-=uy*f; }
+    for(const b of A){ b.vx*=.82;b.vy*=.82;b.x+=b.vx;b.y+=b.vy;
+      b.x=Math.max(34,Math.min(W-34,b.x)); b.y=Math.max(30,Math.min(H-30,b.y)); if(b.glow>0) b.glow=Math.max(0,b.glow-.02); }
+    for(const p of P) p.t+=.035; for(let i=P.length-1;i>=0;i--) if(P[i].t>=1) P.splice(i,1); }
+  function arrow(a,b,color='rgba(148,163,184,.7)'){ const ang=Math.atan2(b.y-a.y,b.x-a.x),ex=b.x-Math.cos(ang)*12,ey=b.y-Math.sin(ang)*12;
+    ctx.fillStyle=color; ctx.beginPath(); ctx.moveTo(ex,ey);
+    ctx.lineTo(ex-Math.cos(ang-.4)*7,ey-Math.sin(ang-.4)*7); ctx.lineTo(ex-Math.cos(ang+.4)*7,ey-Math.sin(ang+.4)*7); ctx.closePath(); ctx.fill(); }
+  function draw(){ ctx.clearRect(0,0,W,H); ctx.lineWidth=1.2;
+    for(const s of S){ const a=B.get(s.from),b=B.get(s.to); if(!a||!b) continue;
+      const write=s.kind==='write';
+      ctx.strokeStyle=write?'rgba(251,191,36,.75)':(s.origin==='static'?'rgba(148,163,184,.35)':'rgba(148,163,184,.6)');
+      ctx.setLineDash(s.origin==='static'?[4,4]:[]); ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); ctx.setLineDash([]);
+      arrow(a,b,write?'rgba(251,191,36,.9)':'rgba(148,163,184,.7)');
+      if(s.key){ ctx.fillStyle='#64748b'; ctx.font='9px ui-monospace'; ctx.textAlign='center'; ctx.fillText(s.key,(a.x+b.x)/2,(a.y+b.y)/2-3); } }
+    for(const p of P){ const a=B.get(p.from),b=B.get(p.to); if(!a||!b) continue;
+      const x=a.x+(b.x-a.x)*ease(p.t), y=a.y+(b.y-a.y)*ease(p.t);
+      ctx.beginPath(); ctx.fillStyle='rgba(250,250,255,'+(1-p.t)+')'; ctx.shadowColor='#fef08a'; ctx.shadowBlur=16;
+      ctx.arc(x,y,5*(1-p.t)+2,0,7); ctx.fill(); ctx.shadowBlur=0; }
+    for(const b of B.values()){ const st=KIND[b.kind]||KIND.ref;
+      if(b.glow>0){ ctx.beginPath(); ctx.fillStyle=hexA(st.r,.18*b.glow); ctx.arc(b.x,b.y,14+22*b.glow,0,7); ctx.fill(); }
+      ctx.beginPath(); ctx.fillStyle=st.c; ctx.shadowColor=st.r; ctx.shadowBlur=8+24*b.glow; ctx.arc(b.x,b.y,9,0,7); ctx.fill(); ctx.shadowBlur=0;
+      ctx.fillStyle='#e5e7eb'; ctx.font='11px ui-monospace'; ctx.textAlign='center'; ctx.fillText(b.label,b.x,b.y-14); } }
+  (function loop(){ step(); draw(); requestAnimationFrame(loop); })();
+}
+
+/* ============================================================ demo graph */
+const first=tracedRef('Ada','first'), last=tracedRef('Lovelace','last');
+const count=tracedRef(0,'count');
+const cart=tracedReactive({apples:1,pears:2,price:100},'cart');
+const fullName=tracedComputed(()=>`${first.value} ${last.value}`,'fullName');
+const greeting=tracedComputed(()=>`Hello, ${fullName.value}!`,'greeting');
+const doubled=tracedComputed(()=>count.value*2,'doubled');
+const total=tracedComputed(()=>(cart.apples+cart.pears)*cart.price,'total');
+const history=tracedRef([],'history');
+tracedWatch(doubled,(v)=>history.value.push(v),{}, 'watchDoubled');
+tracedWatchEffect(()=>{ document.title=greeting.value; },'titleEffect');
+tracedWatchEffect(()=>{ void total.value; void doubled.value; },'combinedEffect');
+
+/* two-way sync — a legit "circular" reactive pattern (celsius <-> fahrenheit).
+   Mutate either side and watch propagation flow BOTH directions; it converges
+   (Vue skips no-op sets) instead of looping forever. */
+const celsius=tracedRef(0,'celsius'), fahrenheit=tracedRef(32,'fahrenheit');
+tracedWatch(celsius,(v)=>{ fahrenheit.value=v*9/5+32; },{}, 'c→f');
+tracedWatch(fahrenheit,(v)=>{ celsius.value=(v-32)*5/9; },{}, 'f→c');
+
+/* prime computed/effects so all edges are discovered */
+await nextTick(); void fullName.value; void greeting.value; void doubled.value; void total.value;
+
+/* ================================================================ UI */
+const controls=document.getElementById('controls');
+const state={};
+function grp(title,code,btns){ const d=document.createElement('div'); d.className='grp';
+  d.innerHTML=`<h2>${title}</h2><code>${code}</code>`;
+  for(const [label,fn] of btns){ const b=document.createElement('button'); b.textContent=label; b.onclick=fn; d.appendChild(b); }
+  const out=document.createElement('div'); out.style.cssText='margin-top:6px;font-size:12px;color:#94a3b8'; d.appendChild(out); controls.appendChild(d); return out; }
+const names=['Grace','Alan','Barbara','Edsger','Katherine'];
+const o1=grp('name chain','first, last → fullName → greeting → titleEffect',[
+  ['randomize first',()=>{ first.value=names[Math.floor(Math.random()*names.length)]; refresh(); }],
+  ['append last',()=>{ last.value+='!'; refresh(); }]]);
+const o2=grp('counter chain','count → doubled → watchDoubled',[
+  ['count++',()=>{ count.value++; refresh(); }], ['count += 10',()=>{ count.value+=10; refresh(); }]]);
+const o3=grp('reactive object','cart.{apples,pears,price} → total → combinedEffect',[
+  ['apples++',()=>{ cart.apples++; refresh(); }], ['pears++',()=>{ cart.pears++; refresh(); }], ['price += 10',()=>{ cart.price+=10; refresh(); }]]);
+const o4=grp('circular / two-way sync','celsius ⇄ fahrenheit (converges, no infinite loop)',[
+  ['celsius = 100',()=>{ celsius.value=100; setTimeout(refresh,50); }],
+  ['fahrenheit = 32',()=>{ fahrenheit.value=32; setTimeout(refresh,50); }],
+  ['celsius += 10',()=>{ celsius.value+=10; setTimeout(refresh,50); }]]);
+function refresh(){ o1.textContent=`fullName: ${fullName.value} · greeting: ${greeting.value}`;
+  o2.textContent=`count: ${count.value} · doubled: ${doubled.value} · history: [${history.value.slice(-3).join(', ')}]`;
+  o3.textContent=`total: ${total.value}`;
+  o4.textContent=`celsius: ${celsius.value.toFixed(1)} · fahrenheit: ${fahrenheit.value.toFixed(1)}`; }
+refresh();
+
+/* legend */
+document.getElementById('legend').innerHTML=Object.entries(KIND).map(([k,v])=>`<span><i style="background:${v.c}"></i>${k}</span>`).join('')
+  +'<span><i style="background:#94a3b8"></i>read (dep→effect)</span><span><i style="background:#fbbf24"></i>write (effect→var)</span>'
+  +'<span style="opacity:.6">glow = fired · pulse = propagation</span>';
+mountOverlay(document.getElementById('graph'));
+</script>
+</body>
+</html>
