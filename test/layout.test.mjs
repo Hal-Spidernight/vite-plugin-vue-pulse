@@ -2,10 +2,12 @@
 // 3D. Drives the pure force sim headlessly and asserts it reaches `settled` within
 // a bounded number of steps, stays asleep until woken, and keeps every body inside
 // the model-space bounding SPHERE. Also exercises the pure rotation math the camera
-// is built on (identity / round-trip / orthonormality), no DOM required.
+// is built on (identity / round-trip / orthonormality) and the pure wheel-zoom
+// math (direction / symmetry / clamping / deltaMode), no DOM required.
 import {
   createForceLayout, boundingRadius,
   mat3Identity, mat3Mul, mat3RotX, mat3RotY, mat3Orthonormalize, rotatePoint,
+  applyZoom,
 } from '../dist/reactivity-graph/overlay.js';
 
 let pass = 0, fail = 0;
@@ -78,6 +80,25 @@ const det =
   m[2] * (m[3] * m[7] - m[4] * m[6]);
 ok(unit && orth, 'orientation stays orthonormal after 10k composes (unit, orthogonal rows)');
 ok(Math.abs(det - 1) < 1e-6, `orientation stays a proper rotation (det=${det.toFixed(6)})`);
+
+// ── pure wheel-zoom math (mirrors the overlay's onWheel) ──────────────────
+ok(applyZoom(1, -100) > 1, 'scroll up (deltaY < 0) zooms in');
+ok(applyZoom(1, 100) < 1, 'scroll down (deltaY > 0) zooms out');
+const zDown = applyZoom(1, 240), zBack = applyZoom(zDown, -240);
+ok(Math.abs(zBack - 1) < 1e-12, 'zoom is symmetric: scroll down then up returns exactly to 1');
+// multiplicative: the same wheel notch gives the same RATIO at any magnification
+const ratioAt1 = applyZoom(1, -120) / 1, ratioAt2 = applyZoom(2, -120) / 2;
+ok(Math.abs(ratioAt1 - ratioAt2) < 1e-12, 'equal notches feel equal at any zoom (multiplicative)');
+// hammering the wheel in either direction SATURATES at the clamp bounds — exact
+// equality, so a silently narrowed range or a nerfed ZOOM_SPEED both fail here
+let zHi = 1; for (let i = 0; i < 200; i++) zHi = applyZoom(zHi, -1000);
+let zLo = 1; for (let i = 0; i < 200; i++) zLo = applyZoom(zLo, 1000);
+ok(zHi === 4 && zLo === 0.25,
+  `sustained scroll saturates at the clamp bounds [0.25, 4] (got ${zLo}..${zHi})`);
+// a line-scroll wheel (deltaMode 1) normalizes to ≈16px per line
+ok(Math.abs(applyZoom(1, 3, 1) - applyZoom(1, 48, 0)) < 1e-12, 'deltaMode 1 (lines) normalizes to px (1 line ≈ 16px)');
+// a page-scroll wheel (deltaMode 2) normalizes via the given page size
+ok(Math.abs(applyZoom(1, 1, 2, 360) - applyZoom(1, 360, 0)) < 1e-12, 'deltaMode 2 (pages) normalizes via pageSize (1 page = panel height)');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

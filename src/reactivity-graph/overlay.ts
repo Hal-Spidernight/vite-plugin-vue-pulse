@@ -8,7 +8,8 @@
  * 3D: the force sim lays the graph out in an ORIGIN-CENTERED model space and
  * clamps it to a bounding sphere; the camera is an accumulated 3x3 rotation
  * matrix you spin by dragging (full 360° tumble in any direction, gimbal-lock
- * free) with inertia. Nothing is WebGL — we rotate/project every point ourselves
+ * free) with inertia, plus a scroll-wheel zoom (an exponential magnification
+ * factor on the projection). Nothing is WebGL — we rotate/project every point ourselves
  * and paint back-to-front on a 2D canvas (painter's algorithm) so near nodes
  * occlude far ones, with atmospheric depth-fade for legibility at scale.
  *
@@ -336,6 +337,22 @@ const ROTATE_SPEED = 0.01;   // rad per px of drag
 const INERTIA_DECAY = 0.94;  // spin velocity retained per frame (~1s glide)
 const SPIN_MIN = 0.0008;     // below this angular speed the spin stops (idle)
 const CAM_DIST_MULT = 2.6;   // camera distance = CAM_DIST_MULT · boundingRadius
+const ZOOM_SPEED = 0.0015;   // zoom factor per px of wheel delta (exponential)
+const ZOOM_MIN = 0.25;       // fully zoomed out — the cloud at 1/4 size
+const ZOOM_MAX = 4;          // fully zoomed in
+
+/**
+ * Next zoom level after a wheel delta. Exponential (multiplicative) so equal
+ * wheel notches feel equal at any magnification, symmetric (a scroll down then
+ * up returns exactly to the start), and clamped to [ZOOM_MIN, ZOOM_MAX].
+ * `deltaMode` normalizes line-scroll (1, ≈16px/line) and page-scroll (2) wheels
+ * to pixel deltas. Pure and exported so it's testable without a DOM.
+ */
+export function applyZoom(zoom: number, deltaY: number, deltaMode = 0, pageSize = 360): number {
+  const px = deltaMode === 1 ? deltaY * 16 : deltaMode === 2 ? deltaY * pageSize : deltaY;
+  const next = zoom * Math.exp(-px * ZOOM_SPEED);
+  return next < ZOOM_MIN ? ZOOM_MIN : next > ZOOM_MAX ? ZOOM_MAX : next;
+}
 
 interface Proj { xr: number; yr: number; zr: number; scale: number; sx: number; sy: number }
 
@@ -359,6 +376,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   // accumulated orientation as a 3x3 rotation matrix; spin* are the angular
   // velocities (rad/frame about the screen X/Y axes) that drive inertia.
   let camR: Mat3 = mat3Identity();
+  let zoom = 1; // screen-space magnification (wheel); multiplies the projection scale
   let dragging = false, spinning = false;
   let lastX = 0, lastY = 0;
   let spinX = 0, spinY = 0;
@@ -469,14 +487,26 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     // deliberate hold-then-release must not launch inertia from a stale velocity
     if (nowMs() - lastMoveT < 64 && Math.hypot(spinX, spinY) > SPIN_MIN) spinning = true;
   }
+  // wheel → zoom: view-only like rotation (redraw, never wake the sim). Also
+  // covers trackpad pinch on Chromium/Firefox (reported as ctrl+wheel; Safari's
+  // proprietary GestureEvents are NOT handled). preventDefault so the gesture
+  // doesn't scroll/zoom the page behind the panel — registered with
+  // { passive: false }, since engines may treat wheel listeners as passive by default.
+  function onWheel(e: WheelEvent) {
+    if (paused) return;
+    zoom = applyZoom(zoom, e.deltaY, e.deltaMode, state.h);
+    cameraDirty = true;
+    e.preventDefault();
+  }
   function doReset() {
-    camR = mat3Identity(); spinX = 0; spinY = 0; spinning = false; dragging = false;
+    camR = mat3Identity(); zoom = 1; spinX = 0; spinY = 0; spinning = false; dragging = false;
     cameraDirty = true;
   }
   canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointermove', onPointerMove);
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.addEventListener('dblclick', doReset);
 
   function anyGlow() { for (const b of bodies.values()) if (b.glow > 0) return true; return false; }
@@ -508,7 +538,9 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       const xr = m0 * x + m1 * y + m2 * z;
       const yr = m3 * x + m4 * y + m5 * z;
       const zr = m6 * x + m7 * y + m8 * z; // +z toward the viewer → larger = nearer
-      const scale = FOCAL / Math.max(CAM_DIST - zr, 1);
+      // zoom multiplies the perspective scale → the whole scene (positions AND
+      // node/label sizes) magnifies about the panel centre, perspective intact
+      const scale = zoom * FOCAL / Math.max(CAM_DIST - zr, 1);
       return { xr, yr, zr, scale, sx: cx + xr * scale, sy: cy + yr * scale };
     };
 
@@ -721,6 +753,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', endDrag);
       canvas.removeEventListener('pointercancel', endDrag);
+      canvas.removeEventListener('wheel', onWheel);
       canvas.removeEventListener('dblclick', doReset);
       canvas.remove();
     },

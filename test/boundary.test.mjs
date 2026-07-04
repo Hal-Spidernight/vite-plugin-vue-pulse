@@ -6,8 +6,19 @@ import { Window } from 'happy-dom';
 const win = new Window();
 globalThis.window = win;
 globalThis.document = win.document;
-// stub canvas 2d + rAF so the overlay runs headlessly
-win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, { get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => ((t[k] = v), true) });
+// stub canvas 2d + rAF so the overlay runs headlessly. The stub also RECORDS
+// draw frames (clearRect starts a draw()) and that frame's arc radii, so tests
+// can observe how OFTEN the overlay draws (idle-CPU invariant) and how BIG it
+// draws (zoom actually scales the scene).
+const frames = { count: 0, arcs: [] };
+win.HTMLCanvasElement.prototype.getContext = () => new Proxy({}, {
+  get: (t, k) => {
+    if (k === 'clearRect') return () => { frames.count++; frames.arcs = []; };
+    if (k === 'arc') return (_x, _y, r) => { frames.arcs.push(r); };
+    return k in t ? t[k] : () => {};
+  },
+  set: (t, k, v) => ((t[k] = v), true),
+});
 globalThis.requestAnimationFrame = (fn) => setTimeout(() => fn(0), 0);
 globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 
@@ -82,6 +93,53 @@ ov.setScopeVisible('A', true);
 ov.setScopeVisible('', false); // the global group is filterable too
 ok(true, 'toggling scope visibility does not throw');
 ok(/^hsla\(/.test(scopeColor('App')) && scopeColor('App') === scopeColor('App'), 'scopeColor is deterministic per boundary');
+
+console.log('[wheel → zoom: event wiring + view-only invariant]');
+// wait until the overlay is TRULY idle: no new draw frames across a sustained
+// window of loop ticks (the settled sim + no anims + no camera motion = no draw)
+const idle = async () => {
+  for (let quiet = 0; quiet < 30;) {
+    const seen = frames.count;
+    await new Promise((r) => setTimeout(r, 2));
+    quiet = frames.count === seen ? quiet + 1 : 0;
+  }
+};
+const mkWheel = (deltaY) => {
+  const e = new win.Event('wheel', { bubbles: true, cancelable: true });
+  e.deltaY = deltaY; e.deltaMode = 0;
+  return e;
+};
+await idle();
+const baseRadius = Math.min(...frames.arcs); // smallest arc in a frame = a node circle (9·scale)
+
+// a same-tick burst of wheel events must cost exactly ONE redraw: zoom is
+// view-only, so it must NOT wake the force sim (a woken sim draws ~170 frames)
+const seenWheel = frames.count;
+let consumed = true;
+for (let i = 0; i < 4; i++) { const e = mkWheel(-120); ov.canvas.dispatchEvent(e); consumed = e.defaultPrevented && consumed; }
+await idle();
+ok(consumed, 'wheel on the canvas is handled (preventDefault → no page scroll)');
+ok(frames.count - seenWheel === 1, `wheel burst = exactly one redraw, sim stays asleep (got ${frames.count - seenWheel} frames)`);
+// …and the wheel actually zoomed: node circles grow by EXACTLY the zoom factor
+const zoomRatio = Math.min(...frames.arcs) / baseRadius;
+const expected = Math.exp(4 * 120 * 0.0015); // 4 notches · 120px · ZOOM_SPEED
+// 1e-6 tolerance: the baseline frame predates the sim's final (undrawn) micro-step,
+// so radii carry ~1e-9 px of positional noise; a real regression is >10% off
+ok(Math.abs(zoomRatio - expected) < 1e-6, `4 notches in scales the scene by e^0.72 ≈ ${expected.toFixed(3)} (got ×${zoomRatio.toFixed(3)})`);
+
+// dblclick resets zoom (and orientation): one redraw, radii back to baseline exactly
+const seenReset = frames.count;
+ov.canvas.dispatchEvent(new win.MouseEvent('dblclick', { bubbles: true }));
+await idle();
+ok(frames.count - seenReset === 1, 'dblclick reset = exactly one redraw (still no sim wake)');
+ok(Math.abs(Math.min(...frames.arcs) - baseRadius) < 1e-6, 'dblclick resets zoom to 1 (node radii return to baseline)');
+
+// …but not while paused: a collapsed panel must not swallow the page's scroll
+ov.pause();
+const wheelPaused = mkWheel(-120);
+ov.canvas.dispatchEvent(wheelPaused);
+ok(!wheelPaused.defaultPrevented, 'wheel is ignored while paused (page scroll not hijacked)');
+ov.resume();
 ov.destroy();
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
