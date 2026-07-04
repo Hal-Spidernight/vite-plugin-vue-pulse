@@ -83,6 +83,10 @@ export function transformReactivity(code: string, _filename = 'anon.js', opts: {
     } else if (canonical === 'watch') {
       if (args.length >= 3) edits.push({ start: args[args.length - 1].end, end: args[args.length - 1].end, text: `, ${q}` });
       else if (args.length === 2) edits.push({ start: args[1].end, end: args[1].end, text: `, {}, ${q}` });
+    } else if (canonical === 'inject') {
+      // label FIRST (inject's trailing args are the default/factory overloads, so
+      // appending would be ambiguous); tracedInject passes the rest through.
+      if (args.length) edits.push({ start: args[0].start, end: args[0].start, text: `${q}, ` });
     }
   });
 

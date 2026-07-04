@@ -1,15 +1,17 @@
 /**
- * Shared component-scope registry.
+ * Shared component-scope helpers.
  *
- * Both the render tracker (`component-plugin.ts`) and the provide/inject wrappers
- * (`tracer.ts`) need to agree on the node id for a given component instance, and
- * on the DI provide→inject links. Centralizing them here keeps identity + teardown
- * consistent and avoids a circular import.
+ * Components are a BOUNDARY, not a node: a node is a declaration / reactivity-API
+ * usage, and each node's `scope` says which component boundary it lives in. What
+ * remains here is the little state both the render tracker (`component-plugin.ts`)
+ * and the provide/inject wrappers (`tracer.ts`) must agree on:
+ *   - the component name (= the boundary key, matches the static analyzer's scope),
+ *   - the per-component `props` node (defineProps IS a declaration → `Comp::props`),
+ *   - the provide-key → provider-node registry for DI edges.
  */
 import { toRaw } from 'vue';
 import { graph } from './graph.js';
 
-const nodeFor = new WeakMap<object, string>();
 const propsFor = new WeakMap<object, string>();
 /** injection key (string form) -> node id of the provided reactive */
 export const providedNodes = new Map<string, string>();
@@ -22,46 +24,27 @@ export function compName(inst: any): string {
 }
 
 /**
- * Ensure (once per instance) a `component` render node exists for `inst`, wiring:
- *   - a parent → child structural edge (component tree / where props flow), and
- *   - a props node `<Comp>▸props` (tagged on the raw props object) so the child's
- *     reads of `props.x` during render attribute to it, plus parent → props.
- * Idempotent: repeated calls (every renderTracked) return the cached id without
- * re-adding, so the refcount stays 1 and teardown works.
+ * Ensure (once per instance) the `props` node for `inst` — the runtime face of
+ * the component's props declaration. Deterministic id `Comp::props`, identical to
+ * what the static analyzer emits for `defineProps`, so they dedup to ONE node.
+ * The raw props object is tagged so render-effect debugger events attribute to it.
+ * Idempotent per instance: the refcount stays 1 and teardown works.
  */
-export function ensureComponentNode(inst: any): string {
-  const cached = nodeFor.get(inst);
+export function ensurePropsNode(inst: any): string | undefined {
+  const cached = propsFor.get(inst);
   if (cached) return cached;
-  const name = compName(inst);
-  // deterministic id derived from the component name — same string the static
-  // analyzer emits for this component's render node, so they dedup to ONE node.
-  const id = `component::${name}`;
-  graph.addNode(id, `<${name}>`, 'component', 'runtime');
-  nodeFor.set(inst, id);
-
-  if (inst.parent) graph.addEdge(ensureComponentNode(inst.parent), id, undefined, 'runtime', 'read');
-
-  const props = inst.props;
-  if (props && typeof props === 'object' && Object.keys(props).length) {
-    const raw = toRaw(props);
-    const pid = `props::${name}`;
-    try { if (!('__vgId' in raw)) Object.defineProperty(raw, '__vgId', { value: pid, enumerable: false, configurable: true }); } catch { /* ignore */ }
-    graph.addNode(pid, `<${name}>▸props`, 'reactive', 'runtime');
-    propsFor.set(inst, pid);
-    graph.addEdge(pid, id, undefined, 'runtime', 'read'); // props feed the render
-    if (inst.parent) graph.addEdge(ensureComponentNode(inst.parent), pid, undefined, 'runtime', 'read'); // parent feeds props
-  }
+  const props = inst && inst.props;
+  if (!props || typeof props !== 'object' || !Object.keys(props).length) return undefined;
+  const raw = toRaw(props);
+  const id = `${compName(inst)}::props`;
+  try { if (!('__vgId' in raw)) Object.defineProperty(raw, '__vgId', { value: id, enumerable: false, configurable: true }); } catch { /* ignore */ }
+  graph.addNode(id, 'props', 'reactive', 'runtime');
+  propsFor.set(inst, id);
   return id;
 }
 
-export function componentNodeIdIfExists(inst: any): string | undefined {
-  return nodeFor.get(inst);
-}
-
-/** Remove a component's render node and props node (on unmount). */
+/** Drop this instance's reference to its props node (on unmount). */
 export function disposeComponent(inst: any): void {
-  const id = nodeFor.get(inst);
-  if (id) graph.removeNode(id);
   const pid = propsFor.get(inst);
   if (pid) graph.removeNode(pid);
 }

@@ -24,7 +24,7 @@ import {
 } from 'vue';
 import type { DebuggerEvent, WatchOptions, WatchStopHandle, Ref, InjectionKey } from 'vue';
 import { graph } from './graph.js';
-import { ensureComponentNode, providedNodes, keyToString } from './component-scope.js';
+import { providedNodes, keyToString } from './component-scope.js';
 import type { NodeKind } from './types.js';
 
 /**
@@ -361,16 +361,19 @@ export function tracedProvide<T>(key: InjectionKey<T> | string | symbol, value: 
 }
 
 /**
- * inject(key[, default[, factory]]): draw a `providedReactive -> <ThisComponent>`
- * DI edge so cross-component dependency-injection shows up in the graph. Variadic
- * to pass through inject's default/factory overloads.
+ * inject(key[, default[, factory]]): `const theme = inject('theme')` is itself a
+ * declaration, so it gets its OWN node (`Consumer::theme` — the same id the static
+ * analyzer emits) plus the `providedReactive -> injectedBinding` DI edge. The
+ * label comes FIRST (the build-time transform prepends the assigned variable
+ * name); the remaining args pass through to Vue's inject untouched, so the
+ * default/factory overloads keep working.
  */
-export function tracedInject(...args: any[]): any {
+export function tracedInject(label: string | null | undefined, ...args: any[]): any {
   const key = args[0];
   const v = (inject as any)(...args);
-  const nodeId = providedNodes.get(keyToString(key)) ?? resolveOrRegister(v);
-  const inst = getCurrentInstance();
-  if (nodeId && inst) graph.addEdge(nodeId, ensureComponentNode(inst), undefined, 'runtime', 'read');
+  const providerId = providedNodes.get(keyToString(key)) ?? resolveOrRegister(v);
+  const id = label ? registerNode('ref', String(label)) : undefined;
+  if (providerId && id) graph.addEdge(providerId, id, undefined, 'runtime', 'read');
   return v;
 }
 

@@ -61,10 +61,13 @@ ok(byLabel('hoge2').length === 1, `single "hoge2" node (got ${byLabel('hoge2').l
 ok(byLabel('hoge3').length === 1, `single "hoge3" node (got ${byLabel('hoge3').length})`);
 const watches = [...graph.nodes.values()].filter((n) => n.kind === 'watch');
 ok(watches.length === 1, `exactly ONE watch node (got ${watches.length}) — the reported bug`);
-ok(byLabel('<App>').length <= 1, `at most one <App> render node (got ${byLabel('<App>').length})`);
+ok(![...graph.nodes.values()].some((n) => n.kind === 'component'), 'no component nodes — component is a boundary, not a node');
 
 // the reconciled node is marked runtime-confirmed (origin flipped static->runtime)
 ok(byLabel('hoge')[0]?.origin === 'runtime', 'hoge reconciled: static node confirmed by runtime');
+ok(byLabel('hoge')[0]?.scope === 'App', 'reconciled node carries the App boundary scope');
+// the static template flag lands on the SAME node the runtime created (merged, not duplicated)
+ok(byLabel('hoge')[0]?.template === true, 'static template read flagged onto the runtime node');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

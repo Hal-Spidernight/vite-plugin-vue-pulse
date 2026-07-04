@@ -6,7 +6,7 @@
  * graph. Keep them in sync against this file.
  */
 
-export type NodeKind = 'ref' | 'reactive' | 'computed' | 'watch' | 'watchEffect' | 'component';
+export type NodeKind = 'ref' | 'reactive' | 'computed' | 'watch' | 'watchEffect';
 export type EdgeKind = 'read' | 'write';
 export type Origin = 'static' | 'runtime';
 
@@ -15,6 +15,15 @@ export interface GraphNode {
   label: string;
   kind: NodeKind;
   origin: Origin;
+  /**
+   * Component the declaration belongs to (derived from the `Comp::label` id).
+   * Components are NOT nodes — a node is a declaration / reactivity-API usage —
+   * they are a BOUNDARY: the overlay clusters same-scope nodes inside a labeled
+   * hull and the panel offers a per-scope filter tag.
+   */
+  scope?: string;
+  /** true when the declaration is read by its component's <template> (render dep) */
+  template?: boolean;
 }
 
 export interface GraphEdge {
@@ -27,7 +36,8 @@ export interface GraphEdge {
 }
 
 export type GraphEventType =
-  | 'node' | 'edge' | 'glow' | 'pulse' | 'reset' | 'remove-node' | 'remove-edge';
+  | 'node' | 'edge' | 'glow' | 'pulse' | 'reset' | 'remove-node' | 'remove-edge'
+  | 'template' | 'boundary';
 
 export interface GraphEvent {
   type: GraphEventType;
@@ -36,6 +46,8 @@ export interface GraphEvent {
   nodeId?: string;
   from?: string;
   to?: string;
+  /** for 'boundary': the component boundary that just re-rendered */
+  scope?: string;
 }
 
 /** Serialized graph — what `ReactivityGraph.toJSON()` and the analyzers produce. */

@@ -14,7 +14,7 @@ const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.e
 const W = 460, H = 360;
 const layout = createForceLayout(W, H);
 // a non-trivial graph (chain + hub + a cycle), like a real component's reactivity
-const kinds = ['ref', 'reactive', 'computed', 'watch', 'watchEffect', 'component'];
+const kinds = ['ref', 'reactive', 'computed', 'watch', 'watchEffect'];
 for (let i = 0; i < 30; i++) layout.addBody({ id: 'n' + i, label: 'n' + i, kind: kinds[i % kinds.length], origin: 'runtime' });
 for (let i = 0; i < 29; i++) layout.addSpring({ from: 'n' + i, to: 'n' + (i + 1), origin: 'runtime', kind: 'read' });
 for (let i = 0; i < 12; i++) layout.addSpring({ from: 'n0', to: 'n' + (i + 5), origin: 'runtime', kind: 'read' }); // hub

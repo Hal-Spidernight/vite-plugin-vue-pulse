@@ -34,8 +34,18 @@ const KIND_STYLE: Record<NodeKind, KindStyle> = {
   computed:    { color: '#34d399', ring: '#6ee7b7', label: 'computed' },
   watch:       { color: '#fbbf24', ring: '#fcd34d', label: 'watch' },
   watchEffect: { color: '#fb7185', ring: '#fda4af', label: 'watchEffect' },
-  component:   { color: '#f472b6', ring: '#f9a8d4', label: 'component (render)' },
 };
+
+/**
+ * Deterministic color for a component boundary/filter tag (hash → hue), so the
+ * hull, its label and the panel's scope chips all agree without a registry.
+ */
+export function scopeColor(scope: string, alpha = 1): string {
+  let hash = 0;
+  for (let i = 0; i < scope.length; i++) hash = (hash * 31 + scope.charCodeAt(i)) | 0;
+  const hue = ((hash % 360) + 360) % 360;
+  return `hsla(${hue}, 70%, 62%, ${alpha})`;
+}
 
 // panel background — far nodes/edges desaturate toward this for atmospheric depth
 const PANEL_BG: [number, number, number] = [11, 18, 32];
@@ -51,6 +61,10 @@ const KIND_RGB: Record<NodeKind, [number, number, number]> = Object.fromEntries(
 
 export interface Body {
   id: string; label: string; kind: NodeKind;
+  /** component boundary this declaration belongs to (drives clustering + hull) */
+  scope?: string;
+  /** read by its component's template (drawn with a render-dep ring) */
+  template?: boolean;
   x: number; y: number; z: number;
   vx: number; vy: number; vz: number;
   glow: number;
@@ -65,6 +79,14 @@ const ALPHA_DECAY = 0.0228;    // reaches ALPHA_MIN from 1 in ~170 steps
 const ALPHA_MIN = 0.02;
 const VELOCITY_DECAY = 0.7;    // keep 70% of velocity per step (damping)
 const GOLDEN_ANGLE = 2.399963229728653;
+// pull toward the same-scope centroid so a component's declarations cluster
+// inside its boundary hull (weak vs. the 2600 repulsion — clusters, not clumps)
+const CLUSTER_PULL = 0.03;
+// keep DIFFERENT boundaries visibly apart: cross-scope pairs repel harder and
+// cross-boundary springs relax to a longer rest length than intra-scope ones
+const CROSS_SCOPE_REPULSION = 2.4;
+const SPRING_REST = 120;
+const CROSS_SCOPE_REST = 230;
 
 // margin between the bounding sphere and the panel edge (in px)
 const NODE_MARGIN = 40;
@@ -200,6 +222,7 @@ export function createForceLayout(width: number, height: number): ForceLayout {
       const ring = Math.sqrt(Math.max(0, 1 - zt * zt));
       const b: Body = {
         id: node.id, label: node.label, kind: node.kind,
+        scope: node.scope, template: node.template,
         x: Math.cos(phi) * ring * rad0,
         y: Math.sin(phi) * ring * rad0,
         z: zt * rad0,
@@ -238,7 +261,9 @@ export function createForceLayout(width: number, height: number): ForceLayout {
           const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
           const d2 = dx * dx + dy * dy + dz * dz || 0.01; // coincident-point guard
           const d = Math.sqrt(d2);
-          const f = 2600 / d2 * alpha;
+          // bodies in different boundaries repel harder → hulls separate visibly
+          const cross = a.scope !== b.scope && (a.scope || b.scope) ? CROSS_SCOPE_REPULSION : 1;
+          const f = cross * 2600 / d2 * alpha;
           const ux = dx / d, uy = dy / d, uz = dz / d;
           a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
           b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
@@ -249,10 +274,29 @@ export function createForceLayout(width: number, height: number): ForceLayout {
         if (!a || !b) continue;
         const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
         const d = Math.hypot(dx, dy, dz) || 0.01; // coincident-point guard
-        const f = (d - 120) * 0.02 * alpha;
+        // a cross-boundary edge relaxes longer so linked hulls don't collide
+        const rest = a.scope !== b.scope ? CROSS_SCOPE_REST : SPRING_REST;
+        const f = (d - rest) * 0.02 * alpha;
         const ux = dx / d, uy = dy / d, uz = dz / d;
         a.vx += ux * f; a.vy += uy * f; a.vz += uz * f;
         b.vx -= ux * f; b.vy -= uy * f; b.vz -= uz * f;
+      }
+      // scope clustering: pull each body toward its component's centroid so the
+      // boundary hulls come out compact and non-overlapping
+      const centroids = new Map<string, { x: number; y: number; z: number; n: number }>();
+      for (const b of arr) {
+        if (!b.scope) continue;
+        let c = centroids.get(b.scope);
+        if (!c) centroids.set(b.scope, c = { x: 0, y: 0, z: 0, n: 0 });
+        c.x += b.x; c.y += b.y; c.z += b.z; c.n++;
+      }
+      for (const b of arr) {
+        if (!b.scope) continue;
+        const c = centroids.get(b.scope)!;
+        if (c.n < 2) continue;
+        b.vx += (c.x / c.n - b.x) * CLUSTER_PULL * alpha;
+        b.vy += (c.y / c.n - b.y) * CLUSTER_PULL * alpha;
+        b.vz += (c.z / c.n - b.z) * CLUSTER_PULL * alpha;
       }
       for (const b of arr) {
         b.vx *= VELOCITY_DECAY; b.vy *= VELOCITY_DECAY; b.vz *= VELOCITY_DECAY;
@@ -278,6 +322,12 @@ export interface OverlayHandle {
   pause(): void;
   resume(): void;
   resetView(): void;
+  /**
+   * Filter tag: show/hide every node inside a component boundary (`''` = the
+   * scopeless/global group). View-only — the sim keeps all bodies, so toggling
+   * never reshuffles the layout.
+   */
+  setScopeVisible(scope: string, visible: boolean): void;
   destroy(): void;
 }
 
@@ -299,6 +349,11 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   const bodies = layout.bodies;
   const springs = layout.springs;
   const pulses: Pulse[] = [];
+  /** component boundary -> flash intensity (a re-render lights the hull, not a node) */
+  const scopeFlash = new Map<string, number>();
+  /** hidden filter tags ('' = the scopeless group) */
+  const hiddenScopes = new Set<string>();
+  const bodyVisible = (b: Body) => !hiddenScopes.has(b.scope || '');
 
   // ── camera (view-only; the sim never sees this) ──────────────────────────
   // accumulated orientation as a 3x3 rotation matrix; spin* are the angular
@@ -367,11 +422,21 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   const unsub = graph.subscribe((ev) => {
     if (ev.type === 'node' && ev.node) layout.addBody(ev.node);
     else if (ev.type === 'edge' && ev.edge) layout.addSpring(ev.edge);
-    else if (ev.type === 'glow' && ev.nodeId) { if (drawingActive()) { const b = bodies.get(ev.nodeId); if (b) b.glow = 1; } }
-    else if (ev.type === 'pulse') { if (drawingActive()) pulses.push({ from: ev.from!, to: ev.to!, t: 0 }); }
+    // glow/pulse for filtered-out scopes are dropped at ENQUEUE time (mirroring
+    // the draw-time filter + the 'boundary' gate below) so a hidden noisy
+    // component can't keep the anim loop burning redraw frames.
+    else if (ev.type === 'glow' && ev.nodeId) { if (drawingActive()) { const b = bodies.get(ev.nodeId); if (b && bodyVisible(b)) b.glow = 1; } }
+    else if (ev.type === 'pulse') {
+      if (drawingActive()) {
+        const a = bodies.get(ev.from!), b = bodies.get(ev.to!);
+        if (a && b && bodyVisible(a) && bodyVisible(b)) pulses.push({ from: ev.from!, to: ev.to!, t: 0 });
+      }
+    }
+    else if (ev.type === 'template' && ev.nodeId) { const b = bodies.get(ev.nodeId); if (b && !b.template) { b.template = true; cameraDirty = true; } }
+    else if (ev.type === 'boundary' && ev.scope) { if (drawingActive() && !hiddenScopes.has(ev.scope)) scopeFlash.set(ev.scope, 1); }
     else if (ev.type === 'remove-node' && ev.nodeId) layout.removeBody(ev.nodeId);
     else if (ev.type === 'remove-edge' && ev.edge) layout.removeSpring(ev.edge);
-    else if (ev.type === 'reset') { layout.clear(); pulses.length = 0; }
+    else if (ev.type === 'reset') { layout.clear(); pulses.length = 0; scopeFlash.clear(); }
   });
 
   // ── drag-to-rotate (pointer + touch, with capture so a drag can leave the canvas) ──
@@ -416,12 +481,13 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
 
   function anyGlow() { for (const b of bodies.values()) if (b.glow > 0) return true; return false; }
 
-  // advance transient animations (glow decay + pulse travel) — independent of the
-  // force sim, so they still play when the layout is asleep.
+  // advance transient animations (glow decay + pulse travel + boundary flash) —
+  // independent of the force sim, so they still play when the layout is asleep.
   function animate() {
     for (const b of bodies.values()) if (b.glow > 0) b.glow = Math.max(0, b.glow - 0.02);
     for (const p of pulses) p.t += 0.035;
     for (let i = pulses.length - 1; i >= 0; i--) if (pulses[i].t >= 1) pulses.splice(i, 1);
+    for (const [s, v] of scopeFlash) { const nv = v - 0.025; if (nv <= 0) scopeFlash.delete(s); else scopeFlash.set(s, nv); }
   }
 
   interface Drawable { depth: number; type: 0 | 1 | 2; s?: Spring; b?: Body; p?: Proj; t?: number }
@@ -456,20 +522,25 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       if (rm > Rmodel) Rmodel = rm;
     }
 
+    drawBoundaries(proj);
+
     // ONE depth-sorted list of edges + nodes + pulses so near occludes far
     const drawables: Drawable[] = [];
     for (const s of springs) {
       const a = proj.get(s.from), b = proj.get(s.to);
       if (!a || !b) continue;
+      const ba = bodies.get(s.from), bb = bodies.get(s.to);
+      if (!ba || !bb || !bodyVisible(ba) || !bodyVisible(bb)) continue; // filter tag
       drawables.push({ depth: (a.zr + b.zr) / 2, type: 0, s });
     }
     for (const b of bodies.values()) {
+      if (!bodyVisible(b)) continue; // filter tag
       const p = proj.get(b.id)!;
       drawables.push({ depth: p.zr, type: 1, b });
     }
     for (const p of pulses) {
       const a = bodies.get(p.from), b = bodies.get(p.to);
-      if (!a || !b) continue;
+      if (!a || !b || !bodyVisible(a) || !bodyVisible(b)) continue;
       const e = ease(p.t);
       const pp = project(a.x + (b.x - a.x) * e, a.y + (b.y - a.y) * e, a.z + (b.z - a.z) * e);
       drawables.push({ depth: pp.zr, type: 2, p: pp, t: p.t });
@@ -482,6 +553,53 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       if (d.type === 0) drawEdge(d.s!, proj, fog);
       else if (d.type === 1) drawNode(d.b!, proj.get(d.b!.id)!, fog);
       else drawPulse(d.p!, d.t!);
+    }
+  }
+
+  /**
+   * Component boundaries: a translucent hull (screen-space circle) around each
+   * scope's projected cluster, labeled with the component name. Drawn UNDER the
+   * graph — a boundary is context, not a node. A re-render flashes it.
+   */
+  function drawBoundaries(proj: Map<string, Proj>) {
+    interface Hull { sx: number; sy: number; n: number; r: number }
+    const hulls = new Map<string, Hull>();
+    for (const b of bodies.values()) {
+      if (!b.scope || !bodyVisible(b)) continue;
+      const p = proj.get(b.id);
+      if (!p) continue;
+      let hl = hulls.get(b.scope);
+      if (!hl) hulls.set(b.scope, hl = { sx: 0, sy: 0, n: 0, r: 0 });
+      hl.sx += p.sx; hl.sy += p.sy; hl.n++;
+    }
+    for (const [scope, hl] of hulls) {
+      hl.sx /= hl.n; hl.sy /= hl.n;
+      for (const b of bodies.values()) {
+        if (b.scope !== scope || !bodyVisible(b)) continue;
+        const p = proj.get(b.id);
+        if (!p) continue;
+        const d = Math.hypot(p.sx - hl.sx, p.sy - hl.sy) + 14 * p.scale;
+        if (d > hl.r) hl.r = d;
+      }
+      hl.r = Math.max(hl.r + 12, 26);
+    }
+    // larger hulls first so overlapping smaller ones stay legible
+    const sorted = [...hulls.entries()].sort((a, b) => b[1].r - a[1].r);
+    for (const [scope, hl] of sorted) {
+      const flash = scopeFlash.get(scope) || 0;
+      ctx.beginPath();
+      ctx.fillStyle = scopeColor(scope, 0.05 + 0.14 * flash);
+      ctx.arc(hl.sx, hl.sy, hl.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 1 + flash;
+      ctx.strokeStyle = scopeColor(scope, 0.30 + 0.55 * flash);
+      ctx.setLineDash([6, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = scopeColor(scope, 0.65 + 0.35 * flash);
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`⟨${scope}⟩`, hl.sx, hl.sy - hl.r - 4);
     }
   }
 
@@ -532,6 +650,14 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     ctx.shadowBlur = b.glow > 0 ? (8 + 22 * b.glow) * scale : (fog < 0.4 ? 6 * scale : 0);
     ctx.arc(p.sx, p.sy, r, 0, Math.PI * 2); ctx.fill();
     ctx.shadowBlur = 0;
+    // render-dep marker: a thin outer ring on declarations the template reads
+    if (b.template) {
+      ctx.beginPath();
+      ctx.lineWidth = Math.max(0.5, 1 * scale);
+      ctx.strokeStyle = `rgba(226,232,240,${0.65 * alpha})`;
+      ctx.arc(p.sx, p.sy, r + 3 * scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     // label only for near/front nodes (declutter at scale)
     if (fog < 0.5 && scale >= 0.95) {
       ctx.globalAlpha = clamp01((0.5 - fog) / 0.5);
@@ -561,7 +687,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     if (drawingActive()) {
       if (!layout.settled) layout.step();
       stepCamera();
-      const anim = pulses.length > 0 || anyGlow();
+      const anim = pulses.length > 0 || anyGlow() || scopeFlash.size > 0;
       if (anim) animate();
       if (!layout.settled || anim || cameraDirty) draw();
       cameraDirty = false;
@@ -576,8 +702,16 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   return {
     canvas,
     pause() { paused = true; },
-    resume() { paused = false; pulses.length = 0; cameraDirty = true; layout.wake(); },
+    // no layout.wake(): positions didn't change while paused (a graph change
+    // during the pause already woke the sim), so expanding the panel must redraw
+    // — not re-run ~170 sim steps and reshuffle a resting cloud.
+    resume() { paused = false; pulses.length = 0; scopeFlash.clear(); cameraDirty = true; },
     resetView() { doReset(); },
+    setScopeVisible(scope, visible) {
+      if (visible) hiddenScopes.delete(scope);
+      else { hiddenScopes.add(scope); scopeFlash.delete(scope); }
+      cameraDirty = true; // view-only: redraw, never reshuffle the layout
+    },
     destroy() {
       cancelAnimationFrame(raf);
       unsub();

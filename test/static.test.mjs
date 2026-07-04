@@ -39,12 +39,17 @@ ok(edgeToKind('greeting', 'watchEffect'), 'greeting -> <watchEffect node>');
 // two-way sync writes captured as write-edges (watch callback / arg 2)
 ok(writeTo('fahrenheit'), 'watch callback write -> fahrenheit (write edge)');
 ok(writeTo('celsius'), 'watch callback write -> celsius (write edge)');
-// template deps -> component render node (via real croquis parseSfc + oxc)
-const toKind = (fromLabel, toKind) => g.edges.some((e) => labelOf(e.from) === fromLabel && g.nodes.find((n) => n.id === e.to)?.kind === toKind);
-ok(g.nodes.some((n) => n.kind === 'component' && n.label === '<App>'), 'component render node <App> from <template>');
-ok(toKind('fullName', 'component'), 'template read: fullName -> <App> render');
-ok(toKind('count', 'component'), 'template read: count -> <App> render');
-ok(g.edges.some((e) => labelOf(e.from) === 'cart' && e.key === 'apples' && g.nodes.find((n) => n.id === e.to)?.kind === 'component'), 'template keyed read: cart.apples -> <App>');
+// components are a BOUNDARY, not a node: template reads flag the declaration
+// (template: true) and props bindings edge into the CHILD's props declaration.
+const tpl = (l) => g.nodes.find((n) => n.label === l)?.template === true;
+ok(!g.nodes.some((n) => n.kind === 'component'), 'no component nodes (component = boundary)');
+ok(tpl('fullName'), 'template read flags fullName as a render dep');
+ok(tpl('count'), 'template read flags count');
+ok(tpl('cart'), 'template read flags cart (keyed member read)');
+ok(g.nodes.find((n) => n.label === 'first')?.scope === 'App', 'nodes carry their boundary scope (App)');
+// cross-boundary props flow between REAL declarations: <Counter :label="greeting">
+ok(g.nodes.some((n) => n.id === 'Counter::props' && n.label === 'props'), 'child props declaration node Counter::props (from the parent template)');
+ok(g.edges.some((e) => e.from === 'App::greeting' && e.to === 'Counter::props' && e.key === 'label'), 'greeting -> Counter::props (:label binding, cross-boundary)');
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

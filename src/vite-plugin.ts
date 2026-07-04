@@ -25,7 +25,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
-import { analyzeSfc } from './static/analyze.js';
+import { analyzeSfc, mergeStaticGraphs } from './static/analyze.js';
+import type { StaticAnalysis } from './static/analyze.js';
 import { transformReactivity } from './static/transform.js';
 
 const VIRTUAL_STATIC = 'virtual:vue-pulse/static';
@@ -64,18 +65,16 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
 
   function buildStaticGraph() {
     const files = collect(root, include);
-    const nodes = new Map<string, any>();
-    const edges = new Map<string, any>();
+    const graphs: StaticAnalysis[] = [];
     for (const f of files) {
       try {
-        const g = analyzeSfc(fs.readFileSync(f, 'utf8'), path.basename(f));
-        for (const n of g.nodes) nodes.set(n.id, n);
-        for (const e of g.edges) edges.set(`${e.from}->${e.to}#${e.key || ''}#${e.kind || ''}`, e);
+        graphs.push(analyzeSfc(fs.readFileSync(f, 'utf8'), path.basename(f)));
       } catch (err: any) {
         console.warn('[reactivity-graph] failed to analyze', f, err?.message);
       }
     }
-    return { nodes: [...nodes.values()], edges: [...edges.values()] };
+    // dedup by id + resolve cross-file provide/inject pairs into DI edges
+    return mergeStaticGraphs(graphs);
   }
 
   return {

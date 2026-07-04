@@ -4,32 +4,40 @@
  * The single biggest reactivity consumer in a Vue app is the *render effect*:
  * the effect Vue creates per component instance to (re-)render its template. It
  * is synthesised internally by Vue, so the build-time transform — which rewrites
- * `ref`/`computed`/`watch`/… in your source — structurally cannot see it. As a
- * result, a ref/reactive used ONLY in `<template>` (the most common UI case) has
- * no traced downstream effect and never glows.
+ * `ref`/`computed`/`watch`/… in your source — structurally cannot see it.
  *
- * This plugin closes that gap WITHOUT touching your source: install it with
- * `app.use(reactivityGraphPlugin)` and a global mixin attaches Vue's dev-only
- * `renderTracked` / `renderTriggered` debugger hooks to every component. From
- * those we:
- *   - add a `component` node per instance (the render effect),
- *   - draw `dependency → <Component>` read-edges (what the template reads),
- *   - wire parent → child (+ props) structural edges (see component-scope),
- *   - ripple a cascade when a template dependency changes, and
- *   - remove the node(s) on unmount (teardown, so an SPA doesn't leak the graph).
+ * A component is NOT a node (a node is a declaration; a component is the BOUNDARY
+ * its declarations live in), so instead of minting a render node we translate the
+ * dev-only `renderTracked` / `renderTriggered` hooks into boundary semantics:
+ *   - `renderTracked`: the template read a declaration → flag that node with
+ *     `template: true` (drawn with a render-dep marker). Reads of the props
+ *     object attribute to the component's `props` declaration node.
+ *   - `renderTriggered`: the component re-rendered → flash its boundary
+ *     (`graph.flashScope`) and ripple a cascade from the changed dependency.
+ *   - unmount → drop this instance's props-node reference (teardown; the
+ *     component's other nodes are removed by their own `onScopeDispose`).
  *
- * `renderTracked`/`renderTriggered` are dev-only in Vue (stripped in production),
- * exactly like `onTrack`/`onTrigger` — perfect for a devtool. It complements, and
- * does not replace, the build-time transform.
+ * Install with `app.use(reactivityGraphPlugin)`. The hooks are dev-only in Vue
+ * (stripped in production), exactly like `onTrack`/`onTrigger` — perfect for a
+ * devtool. It complements, and does not replace, the build-time transform.
  */
 import type { App, DebuggerEvent } from 'vue';
+import { toRaw } from 'vue';
 import { graph } from './graph.js';
-import { keyOf, resolveReactiveId } from './tracer.js';
-import { ensureComponentNode, disposeComponent } from './component-scope.js';
+import { resolveReactiveId } from './tracer.js';
+import { compName, ensurePropsNode, disposeComponent } from './component-scope.js';
 
 export interface ReactivityGraphPluginOptions {
   /** ripple a full cascade from the changed dependency on re-render (default true) */
   cascadeOnRender?: boolean;
+}
+
+/** Resolve a render-effect debugger target: the props object -> the `Comp::props`
+ *  declaration node; anything else -> the tagged (or external) reactive's node. */
+function resolveRenderDep(inst: any, e: DebuggerEvent): string | undefined {
+  const props = inst && inst.props;
+  if (props && typeof props === 'object' && e.target === toRaw(props)) return ensurePropsNode(inst);
+  return resolveReactiveId(e.target);
 }
 
 export function reactivityGraphPlugin(app: App, options: ReactivityGraphPluginOptions = {}): App {
@@ -38,15 +46,13 @@ export function reactivityGraphPlugin(app: App, options: ReactivityGraphPluginOp
   app.mixin({
     // `this.$` is the internal component instance (publicPropertiesMap maps $ -> i).
     renderTracked(this: any, e: DebuggerEvent) {
-      const id = ensureComponentNode(this.$);
-      const src = resolveReactiveId(e.target);
-      if (src) graph.addEdge(src, id, keyOf(e), 'runtime', 'read');
+      const src = resolveRenderDep(this.$, e);
+      if (src) graph.markTemplate(src);
     },
     renderTriggered(this: any, e: DebuggerEvent) {
-      const id = ensureComponentNode(this.$);
-      const src = resolveReactiveId(e.target);
+      const src = resolveRenderDep(this.$, e);
       if (cascadeOnRender && src && graph.nodes.has(src)) graph.cascadeFrom(src);
-      else graph.glow(id);
+      graph.flashScope(compName(this.$));
     },
     beforeUnmount(this: any) {
       disposeComponent(this.$);

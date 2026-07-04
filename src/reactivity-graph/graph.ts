@@ -1,9 +1,11 @@
 /**
  * Reactivity graph store.
  *
- * Holds the *nodes* (ref / reactive / computed / watch / watchEffect / component)
- * and the *edges* (dependency -> dependent, i.e. "when `from` changes, `to`
- * re-runs").
+ * Holds the *nodes* (declarations / reactivity-API usages: ref / reactive /
+ * computed / watch / watchEffect) and the *edges* (dependency -> dependent,
+ * i.e. "when `from` changes, `to` re-runs"). Components are NOT nodes — they
+ * are a BOUNDARY (each node's `scope`), rendered as a cluster hull and usable
+ * as a filter tag; a re-render surfaces as a 'boundary' flash event.
  *
  * The store is framework-agnostic and side-effect free: the runtime tracer feeds
  * it discovered edges and propagation events, and the overlay subscribes to
@@ -59,7 +61,11 @@ export class ReactivityGraph {
       if (existing.origin === 'static' && origin === 'runtime') existing.origin = 'runtime';
       return existing;
     }
-    const node: GraphNode = { id, label, kind, origin };
+    // scope (the component boundary) is derived from the id itself — `Comp::label`
+    // → 'Comp' — so both the static and runtime sides agree without extra plumbing.
+    const sep = id.indexOf('::');
+    const scope = sep > 0 ? id.slice(0, sep) : undefined;
+    const node: GraphNode = scope ? { id, label, kind, origin, scope } : { id, label, kind, origin };
     this.nodes.set(id, node);
     this.refs.set(id, 1);
     this.emit({ type: 'node', node });
@@ -102,6 +108,20 @@ export class ReactivityGraph {
   glow(nodeId: string): void {
     if (!this.nodes.has(nodeId)) return;
     this.emit({ type: 'glow', nodeId });
+  }
+
+  /** Flag a declaration as read by its component's template (render dependency). */
+  markTemplate(nodeId: string): void {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.template) return;
+    node.template = true;
+    this.emit({ type: 'template', nodeId });
+  }
+
+  /** A component re-rendered: flash its boundary (components are not nodes). */
+  flashScope(scope: string): void {
+    if (!scope) return;
+    this.emit({ type: 'boundary', scope });
   }
 
   /** Animate a propagation pulse along an edge from -> to. */

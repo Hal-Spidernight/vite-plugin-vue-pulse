@@ -7,7 +7,9 @@
 //   count ──▶ doubled ──▶ (watch: history)
 //   cart ──▶ total ──▶ (combinedEffect)
 //   celsius ⇄ fahrenheit (two-way sync loop)
-//   greeting ──▶ <Counter> (prop, parent → child)
+//   greeting ──▶ Counter::props (:label — cross-boundary, into the child's defineProps)
+// Components are boundaries, not nodes: the App/Counter hulls cluster their own
+// declarations, re-renders flash the hull, and the panel chips filter per scope.
 import { ref, reactive, computed, watch, watchEffect } from 'vue';
 import Counter from './Counter.vue';
 

@@ -7,19 +7,33 @@
  *   2. parse the `<script>` to an ESTree AST with `oxc-parser`;
  *   3. walk it to collect reactive bindings and wire dependency edges — computed
  *      getters / watch sources / watchEffect bodies (reads), watch-callback
- *      assignments (writes), and template expressions → the component node.
+ *      assignments (writes).
+ *
+ * Components are a BOUNDARY, not a node: every node is a declaration /
+ * reactivity-API usage, scoped `Comp::label`. Template reads therefore don't
+ * create a render node — they flag the declaration with `template: true` — and
+ * cross-component flow is wired between real declarations: `<Child :p="expr">`
+ * edges into `Child::props` (the child's defineProps declaration), and
+ * provide/inject links the provided declaration to the injecting one (resolved
+ * across files by `mergeStaticGraphs`).
  *
  * Emits the SAME node/edge shape the runtime tracer uses (see
  * `../reactivity-graph/types.ts`), so the static "map" and the live "traffic"
- * overlay onto one graph, reconciled by label.
+ * dedup onto one graph by id.
  */
 import { parseSync } from 'oxc-parser';
 import { parseSfc } from '@vizejs/native';
 import type { NodeKind, EdgeKind, ReactivityGraphExport } from '../reactivity-graph/types.js';
 
 type AnyNode = any;
-interface Binding { id: string; kind: string }
+interface Binding { id: string; kind: string; key?: string }
 interface Read { label: string; key?: string }
+
+/** One file's analysis + the DI endpoints `mergeStaticGraphs` links across files. */
+export interface StaticAnalysis extends ReactivityGraphExport {
+  provides?: Array<{ key: string; id: string }>;
+  injects?: Array<{ key: string; id: string }>;
+}
 
 // Recognises both the real Vue factories and this devtool's traced wrappers.
 const REACTIVE_FACTORY: Record<string, string> = {
@@ -32,7 +46,7 @@ const REACTIVE_FACTORY: Record<string, string> = {
   tracedToRef: 'ref', tracedCustomRef: 'ref',
 };
 /** factories whose result is an object of refs to destructure (const {a,b} = f(src)) */
-const DESTRUCTURE_FACTORY = new Set(['toRefs', 'storeToRefs', 'tracedToRefs', 'defineProps']);
+const DESTRUCTURE_FACTORY = new Set(['toRefs', 'storeToRefs', 'tracedToRefs']);
 const COMPUTED_NAMES = new Set(['computed', 'tracedComputed']);
 const WATCH_NAMES = new Set(['watch', 'tracedWatch']);
 const WATCHEFFECT_NAMES = new Set(['watchEffect', 'tracedWatchEffect', 'watchPostEffect', 'tracedWatchPostEffect', 'watchSyncEffect', 'tracedWatchSyncEffect']);
@@ -46,7 +60,7 @@ function parseModule(code: string): AnyNode {
   return typeof program === 'string' ? JSON.parse(program) : program;
 }
 
-export function analyzeSfc(source: string, filename = 'Anon.vue'): ReactivityGraphExport {
+export function analyzeSfc(source: string, filename = 'Anon.vue'): StaticAnalysis {
   const desc: AnyNode = parseSfc(source, { filename });
   // Analyze BOTH <script setup> and a plain <script> (defineOptions/name pattern).
   const parts = [desc?.scriptSetup?.content, desc?.script?.content].filter(Boolean) as string[];
@@ -54,24 +68,24 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): ReactivityGra
   // runtime scope (Vue sets `inst.type.__name` to the same), so static and runtime
   // nodes reconcile instead of duplicating.
   const name = String(filename).split('/').pop()!.replace(/\.\w+$/, '');
-  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, componentLabel: `<${name}>`, scope: name });
+  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, scope: name });
 }
 
 export interface AnalyzeOptions {
-  /** raw <template> content — reads inside it become `dep -> <Component>` edges */
+  /** raw <template> content — reads inside it flag the declarations `template: true` */
   template?: string;
-  /** label for the component render node (defaults to a generic name) */
-  componentLabel?: string;
   /** component name used to scope node keys (matches the runtime's `inst.type.__name`) */
   scope?: string;
 }
 
-export function analyzeScript(code: string, opts: AnalyzeOptions = {}): ReactivityGraphExport {
+export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAnalysis {
   const ast = code.trim() ? parseModule(code) : { body: [] };
 
   const bindings = new Map<string, Binding>();
-  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static' }> = [];
+  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static'; scope?: string; template?: boolean }> = [];
   const edges = new Map<string, { from: string; to: string; key?: string; origin: 'static'; kind: EdgeKind }>();
+  const provides: Array<{ key: string; id: string }> = [];
+  const injects: Array<{ key: string; id: string }> = [];
   // per-kind counters for anonymous watch/watchEffect — order-index labels match
   // the build-time transform's, so static and runtime effects reconcile.
   let anonWatch = 0, anonWatchEffect = 0;
@@ -83,16 +97,50 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
   const nodeId = (label: string) => `${scopePrefix}${label}`;
   const addNode = (label: string, kind: string): string => {
     if (!nodes.find((n) => n.id === nodeId(label))) {
-      nodes.push({ id: nodeId(label), label, kind: kind as NodeKind, origin: 'static' });
+      const n: (typeof nodes)[number] = { id: nodeId(label), label, kind: kind as NodeKind, origin: 'static' };
+      if (opts.scope) n.scope = opts.scope; // boundary membership, same as the runtime derives
+      nodes.push(n);
     }
     return nodeId(label);
   };
-  const addEdge = (fromLabel: string, toId: string, key: string | undefined, kind: EdgeKind = 'read') => {
-    const from = nodeId(fromLabel);
-    if (from === toId) return;
-    const k = `${from}->${toId}${key ? '#' + key : ''}#${kind}`;
-    if (!edges.has(k)) edges.set(k, { from, to: toId, key, origin: 'static', kind });
+  /** a node owned by ANOTHER component's boundary (e.g. `Child::props`) */
+  const addForeignNode = (id: string, label: string, kind: NodeKind): string => {
+    if (!nodes.find((n) => n.id === id)) {
+      const sep = id.indexOf('::');
+      const n: (typeof nodes)[number] = { id, label, kind, origin: 'static' };
+      if (sep > 0) n.scope = id.slice(0, sep);
+      nodes.push(n);
+    }
+    return id;
   };
+  /** resolve a binding name to its node id (destructured defineProps locals all map to `Comp::props`) */
+  const idOf = (label: string) => bindings.get(label)?.id ?? nodeId(label);
+  const rawEdge = (from: string, to: string, key: string | undefined, kind: EdgeKind = 'read') => {
+    if (from === to) return;
+    const k = `${from}->${to}${key ? '#' + key : ''}#${kind}`;
+    if (!edges.has(k)) edges.set(k, { from, to, key, origin: 'static', kind });
+  };
+  const addEdge = (fromLabel: string, toId: string, key: string | undefined, kind: EdgeKind = 'read') => {
+    rawEdge(idOf(fromLabel), toId, key, kind);
+  };
+
+  // ---- pass 0: which template tags are .vue children? (tag -> child scope) ---
+  // The child's scope is the import's basename — the same deterministic scope the
+  // child's own analysis and runtime use, so `<Child :p="x">` can edge into
+  // `Child::props` without reading the child's file.
+  const vueImports = new Map<string, string>();
+  for (const stmt of ast.body as AnyNode[]) {
+    if (stmt.type !== 'ImportDeclaration') continue;
+    const src = String(stmt.source?.value || '');
+    if (!src.endsWith('.vue')) continue;
+    const base = src.split('/').pop()!.replace(/\.\w+$/, '');
+    for (const spec of stmt.specifiers || []) {
+      if (spec.local?.name) {
+        vueImports.set(spec.local.name, base);
+        vueImports.set(kebabCase(spec.local.name), base); // <MyChild> and <my-child>
+      }
+    }
+  }
 
   // ---- pass 1: collect reactive bindings from top-level declarations -----
   for (const stmt of ast.body as AnyNode[]) {
@@ -104,7 +152,36 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
       if (d.init?.type !== 'CallExpression') continue;
       const callee = calleeName(d.init.callee);
 
-      // destructured refs: const { a, b } = toRefs(src) / storeToRefs / defineProps
+      // defineProps IS the declaration: ONE `Comp::props` node, however it's
+      // consumed — `const props = defineProps(...)` or destructured locals (which
+      // the runtime render tracker also attributes to the props object).
+      if (callee === 'defineProps') {
+        const id = addNode('props', 'reactive');
+        if (d.id.type === 'Identifier') {
+          bindings.set(d.id.name, { id, kind: 'reactive' });
+        } else if (d.id.type === 'ObjectPattern') {
+          for (const prop of d.id.properties) {
+            if (prop.type !== 'Property' || prop.key.type !== 'Identifier') continue;
+            const local = prop.value.type === 'Identifier' ? prop.value.name : prop.key.name;
+            bindings.set(local, { id, kind: 'reactive', key: prop.key.name });
+          }
+        }
+        continue;
+      }
+
+      // `const theme = inject('theme')` is a declaration too — its own node, and
+      // a DI endpoint mergeStaticGraphs links to the matching provide() cross-file.
+      if (d.id.type === 'Identifier' && (callee === 'inject' || callee === 'tracedInject')) {
+        const label = d.id.name;
+        const id = addNode(label, 'ref');
+        bindings.set(label, { id, kind: 'ref' });
+        const keyArg = d.init.arguments[callee === 'tracedInject' ? 1 : 0];
+        const key = keyArg && keyArg.type === 'Literal' && typeof keyArg.value === 'string' ? keyArg.value : null;
+        if (key) injects.push({ key, id });
+        continue;
+      }
+
+      // destructured refs: const { a, b } = toRefs(src) / storeToRefs
       if (d.id.type === 'ObjectPattern' && callee && DESTRUCTURE_FACTORY.has(callee)) {
         const srcArg = d.init.arguments[0];
         const srcName = srcArg && srcArg.type === 'Identifier' ? srcArg.name : null;
@@ -173,29 +250,86 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): Reactivi
       const toId = addNode(label, 'watch');
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
       for (const w of writesIn(node.arguments[1], bindings)) addEdge(label, nodeId(w.label), w.key, 'write');
+    } else if (name === 'provide' || name === 'tracedProvide') {
+      // DI endpoint: remember which declaration was provided under which key so
+      // mergeStaticGraphs can wire provide -> inject across files.
+      const key = stringArg(node.arguments[0]);
+      const valArg = node.arguments[1];
+      const b = valArg && valArg.type === 'Identifier' ? bindings.get(valArg.name) : undefined;
+      if (key && b) provides.push({ key, id: b.id });
     }
   });
 
-  // ---- template pass: reads in <template> feed the component render effect ---
+  // ---- template pass: components are a boundary, not a node -----------------
   if (opts.template) {
-    const compLabel = opts.componentLabel || '<Component>';
-    // same id the runtime render tracker uses, so they dedup to one node
-    const componentNodeId = opts.scope ? `component::${opts.scope}` : compLabel;
-    let created = false;
+    // 1. a template read flags the declaration as a render dep (`template: true`)
+    //    — the runtime's renderTracked sets the same flag; no synthetic node.
     for (const expr of templateExpressions(opts.template)) {
       let sub: AnyNode;
       try { sub = parseModule(`(${expr});`); } catch { continue; }
       for (const dep of readsIn(sub, bindings)) {
-        if (!created) {
-          if (!nodes.find((n) => n.id === componentNodeId)) nodes.push({ id: componentNodeId, label: compLabel, kind: 'component', origin: 'static' });
-          created = true;
+        const n = nodes.find((x) => x.id === idOf(dep.label));
+        if (n) n.template = true;
+      }
+    }
+
+    // 2. cross-boundary props flow between REAL declarations: `<Child :p="expr">`
+    //    wires expr's deps into the child's defineProps node (`Child::props`);
+    //    v-model additionally writes back (`Child::props -> dep`, the update event).
+    for (const [tag, child] of vueImports) {
+      const childProps = `${child}::props`;
+      // attr region = up to the tag's closing `>`, but a `>` INSIDE a quoted
+      // attribute value (`:label="a > b"`) must not truncate the match
+      for (const m of opts.template.matchAll(new RegExp(`<${tag}\\b((?:[^>"']|"[^"]*"|'[^']*')*)`, 'g'))) {
+        const attrs = m[1];
+        const found: Array<{ prop: string; expr: string; twoWay: boolean }> = [];
+        for (const am of attrs.matchAll(/(?::|v-bind:)([\w-]+)(?:\.[\w.-]+)?\s*=\s*"([^"]*)"/g)) {
+          found.push({ prop: camelCase(am[1]), expr: am[2], twoWay: false });
         }
-        addEdge(dep.label, componentNodeId, dep.key);
+        for (const am of attrs.matchAll(/v-model(?::([\w-]+))?(?:\.[\w.-]+)?\s*=\s*"([^"]*)"/g)) {
+          found.push({ prop: camelCase(am[1] || 'modelValue'), expr: am[2], twoWay: true });
+        }
+        for (const { prop, expr, twoWay } of found) {
+          let sub: AnyNode;
+          try { sub = parseModule(`(${expr});`); } catch { continue; }
+          for (const dep of readsIn(sub, bindings)) {
+            addForeignNode(childProps, 'props', 'reactive');
+            addEdge(dep.label, childProps, prop);
+            if (twoWay) rawEdge(childProps, idOf(dep.label), prop, 'write');
+          }
+        }
       }
     }
   }
 
-  return { nodes, edges: [...edges.values()] };
+  return { nodes, edges: [...edges.values()], provides, injects };
+}
+
+/**
+ * Merge per-file analyses into one static graph: dedup nodes by id (OR-ing the
+ * template flag), dedup edges, and resolve provide/inject pairs by key into
+ * cross-file DI edges (`providedDeclaration -> injectedDeclaration`).
+ */
+export function mergeStaticGraphs(graphs: StaticAnalysis[]): ReactivityGraphExport {
+  const nodes = new Map<string, StaticAnalysis['nodes'][number]>();
+  const edges = new Map<string, StaticAnalysis['edges'][number]>();
+  const provided = new Map<string, string>();
+  const injected: Array<{ key: string; id: string }> = [];
+  for (const g of graphs) {
+    for (const n of g.nodes) {
+      const prev = nodes.get(n.id);
+      if (prev) { if (n.template) prev.template = true; }
+      else nodes.set(n.id, { ...n });
+    }
+    for (const e of g.edges) edges.set(`${e.from}->${e.to}#${e.key || ''}#${e.kind || 'read'}`, e);
+    for (const p of g.provides || []) if (!provided.has(p.key)) provided.set(p.key, p.id);
+    for (const i of g.injects || []) injected.push(i);
+  }
+  for (const i of injected) {
+    const from = provided.get(i.key);
+    if (from && from !== i.id) edges.set(`${from}->${i.id}##read`, { from, to: i.id, origin: 'static', kind: 'read' });
+  }
+  return { nodes: [...nodes.values()], edges: [...edges.values()] };
 }
 
 // ---- helpers -------------------------------------------------------------
@@ -226,8 +360,9 @@ function readsIn(node: AnyNode, bindings: Map<string, Binding>): Read[] {
     if (parent && parent.type === 'MemberExpression' && parent.property === n && !parent.computed) return;
     const b = bindings.get(n.name);
     if (!b) return;
-    let key: string | undefined;
-    if (parent && parent.type === 'MemberExpression' && parent.object === n) {
+    // a destructured defineProps local reads ONE key of `Comp::props`
+    let key: string | undefined = b.key;
+    if (!key && parent && parent.type === 'MemberExpression' && parent.object === n) {
       if (b.kind === 'reactive' && parent.property.type === 'Identifier' && !parent.computed) key = parent.property.name;
     }
     const sig = `${n.name}#${key || ''}`;
@@ -298,6 +433,16 @@ function templateExpressions(tpl: string): string[] {
     if (e.trim()) out.push(e);
   }
   return out;
+}
+
+/** PascalCase/camelCase -> kebab-case (template tag spelling of an import). */
+function kebabCase(s: string): string {
+  return s.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+}
+
+/** kebab-case attr -> camelCase prop name (`:model-value` -> `modelValue`). */
+function camelCase(s: string): string {
+  return s.replace(/-(\w)/g, (_, c: string) => c.toUpperCase());
 }
 
 /** Byte-independent line number (UTF-16 safe) for anonymous effect labels. */

@@ -1,10 +1,16 @@
 # vite-plugin-vue-pulse
 
 A **dev-only Vite plugin** that visualizes the causal relationships between Vue
-reactives (`ref` / `reactive` / `computed` / `watch` / `watchEffect` + the
-component **render effect**) as a graph, and **lights it up as changes propagate
-at runtime** — nodes glow when they fire and pulses travel along the edges from
-dependency to dependent.
+reactives (`ref` / `reactive` / `computed` / `watch` / `watchEffect`) as a graph,
+and **lights it up as changes propagate at runtime** — nodes glow when they fire
+and pulses travel along the edges from dependency to dependent.
+
+The model is strict: **a node is a declaration / reactivity-API usage; an edge is
+a dependency between two declarations.** Components are neither — they are the
+**boundary** a declaration lives in: each node carries a `scope` (`Comp::label`),
+the overlay clusters same-scope nodes inside a labeled boundary hull, a re-render
+flashes that boundary, and the panel offers one **filter tag per component** to
+show/hide its scope.
 
 Two layers, one graph:
 
@@ -56,9 +62,9 @@ equivalents automatically (no `tracedRef`, no mixin, no source changes). It is
 | `readonly` `shallowReadonly` | ✅ | read-only state |
 | `watch` `watchEffect` `watchPostEffect` `watchSyncEffect` | ✅ | source = read deps; callback/body writes = write-edges |
 | `toRef` / `toRefs` | ✅ | `toRef` → node + keyed `source → toRef` edge; `toRefs` deps attribute to the source key |
-| **component render effect** | ✅ | `app.use(reactivityGraphPlugin)` → a `component` node per instance via `renderTracked`/`renderTriggered`. **Template-only state now glows.** |
-| **props (parent → child)** | ✅ | `<Comp>▸props` node + `parent → child` and `parent → props → render` edges |
-| **`provide` / `inject`** | ✅ | DI edge `providedReactive → <Consumer>` (via the transformed `provide`/`inject`) |
+| **component render effect** | ✅ | `app.use(reactivityGraphPlugin)` → `renderTracked` flags what the template reads (`template: true`, drawn with a ring); `renderTriggered` **flashes the component's boundary**. No render node — a component is a boundary, not a declaration. |
+| **props (parent → child)** | ✅ | `defineProps` is the declaration → ONE `Child::props` node; the parent's `<Child :p="expr">` wires `expr`'s deps → `Child::props` (keyed), `v-model` adds the write-back edge |
+| **`provide` / `inject`** | ✅ | `inject` is a declaration → its own node + DI edge `providedDeclaration → injectedDeclaration` (cross-file pairs resolved at merge) |
 | `defineModel` | ◐ | static: a `ref` node; runtime: flows through the props node |
 | `customRef` | ◐ | node + writes work; Vue hides its `onTrack` target, so *incoming* read-edges can't be attributed |
 | **external reactives** (Pinia state, VueUse refs, `useRoute()`) | ✅ | auto-registered as `⟨ext⟩` nodes by object identity — no need to transform `node_modules` |
@@ -72,7 +78,14 @@ and the propagation ripple has a visited-guard so cyclic chains don't hang.
 
 **Lifecycle:** node identity is component-scoped (`Comp::count`), so two
 components that both declare `count` stay distinct; nodes are removed on
-`onScopeDispose` / component unmount, so long-running SPAs don't leak the graph.
+`onScopeDispose` / component unmount, so long-running SPAs don't leak the graph
+(and a boundary disappears with its last node).
+
+**Boundaries & filter tags:** every scoped node is drawn inside its component's
+translucent boundary hull (deterministic color per component, clustered by a
+weak same-scope force). A re-render flashes the hull. The panel renders one chip
+per component — click to hide/show that boundary's nodes (view-only: the layout
+does not reshuffle).
 
 ## Static analysis (the "map")
 
@@ -83,7 +96,9 @@ The static analyzer:
 - parses the `<script>` to an AST with `oxc-parser`;
 - walks it to collect reactive bindings and wire the dependency edges — computed
   getters / watch sources / watchEffect bodies (reads), watch-callback assignments
-  (writes), and template expressions → the component node.
+  (writes); template expressions flag the declarations they read (`template: true`),
+  and `<Child :p="expr">` bindings edge into `Child::props` (cross-boundary flow
+  between real declarations — no component node is ever emitted).
 
 The edge-building logic is entirely in this plugin. (`parseSfc` is easily
 swappable for `@vue/compiler-sfc` if you'd rather not pull a native dependency.)
@@ -102,18 +117,22 @@ wrappers. Each wrapper tags the underlying reactive with a stable id and attache
 / `cascadeFrom` drive a staggered BFS ripple outward from the mutation origin. The
 render effect (which the transform can't reach — Vue synthesizes it) is captured
 separately via the `renderTracked`/`renderTriggered` hooks installed by
-`reactivityGraphPlugin`. `onTrack`/`onTrigger`/`renderTracked` are dev-only in Vue.
+`reactivityGraphPlugin` — translated into boundary semantics: template reads flag
+the declaration (`template: true`), re-renders flash the component's boundary
+hull. `onTrack`/`onTrigger`/`renderTracked` are dev-only in Vue.
 
 **Static.** `parseSfc` → `<script setup>`(+`<script>`) + template → oxc AST → two
-passes (collect reactive bindings; wire `dep → effect` edges for each computed
-getter / watch source / watchEffect body / template expression), plus write-edges
-from assignments, mutating-method calls, and computed setters.
+passes (collect reactive bindings incl. `defineProps`/`inject`; wire `dep → effect`
+edges for each computed getter / watch source / watchEffect body), plus write-edges
+from assignments, mutating-method calls, and computed setters. The template pass
+flags render deps and wires `<Child :p="expr">` into `Child::props`; per-file
+provide/inject endpoints are resolved into DI edges by `mergeStaticGraphs`.
 
 ## Build / test
 
 ```bash
 npm run build   # tsc -> dist/ (.js + .d.ts)   — the published artifact
-npm test        # builds, then runs 11 suites (incl. a real Vite dev-server e2e over the playground)
+npm test        # builds, then runs 14 suites (incl. a real Vite dev-server e2e over the playground)
 npm run dev     # builds the plugin, then runs the playground/ sample app (panel auto-mounts)
 ```
 
@@ -129,9 +148,10 @@ Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 
 - `tracer` / `computed_setter` / `scale_cycle` / `external` — runtime edge discovery, write-edges, 82-node stress + circular reactivity, external auto-register (vs real `@vue/reactivity`).
 - `deep_writes` — nested / array / `Map`/`Set` write capture + `toRef` linkage (vs real Vue).
-- `component_render` — render-effect tracking, component-scoped identity (no cross-component collision), unmount teardown (real client mount).
-- `cross_component` — parent→child + props flow + provide/inject DI edges (real client mount).
-- `static` — the analyzer recovers the demo's causal + template edges from source.
+- `component_render` — render-dep flags + boundary flash on re-render, component-scoped identity (no cross-component collision), unmount teardown (real client mount).
+- `cross_component` — `Child::props` + inject-declaration DI edges across boundaries (real client mount).
+- `boundary` — scope derivation, template/boundary events, scope clustering in the layout, the overlay's filter-tag API.
+- `static` — the analyzer recovers the demo's causal edges + render-dep flags + cross-boundary props edges from source.
 - `transform` — the build-time codemod turns plain Vue into a live graph.
 - `plugin` / `e2e_vite` — the Vite plugin's virtual modules + auto-inject, and a **real dev-server end-to-end** run (plugin-vue ordering, decoupled virtual-runtime injection).
 
@@ -141,12 +161,12 @@ Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 src/vite-plugin.ts                 dev plugin: virtual static graph + virtual runtime + auto-inject
 src/reactivity-graph/
   types.ts         shared node/edge schema (single source of truth)
-  graph.ts         node/edge store + cascade + teardown (removeNode/refcount)
+  graph.ts         node/edge store + cascade + boundary/template events + teardown
   tracer.ts        traced ref/reactive/computed/watch/toRef/provide/inject wrappers
-  component-plugin.ts   app.use plugin: render-effect (renderTracked/Triggered) tracking
-  component-scope.ts    component-node identity, props node, provide/inject registry
-  overlay.ts       canvas force-graph: glow + pulses (pauses when collapsed/hidden)
-  index.ts         mountPanel(), loadStaticGraph(), re-exports (the ./runtime entry)
+  component-plugin.ts   app.use plugin: renderTracked -> template flags, renderTriggered -> boundary flash
+  component-scope.ts    boundary name, `Comp::props` node, provide/inject registry
+  overlay.ts       canvas force-graph: boundary hulls + scope filter + glow/pulses
+  index.ts         mountPanel() (incl. filter chips), loadStaticGraph(), re-exports
 src/static/
   analyze.ts       static analyzer (parseSfc splits the SFC, oxc parses, we build the edges)
   transform.ts     build-time codemod: ref/reactive/... -> traced (oxc-based)
@@ -157,7 +177,7 @@ playground/        sample Vue app consuming the plugin by name (demo + e2e targe
 ## Scope / honesty
 
 - Runtime tracer, render tracker, static analyzer and Vite plugin are implemented
-  and tested here; the package builds clean (`tsc`) and all 11 suites pass,
+  and tested here; the package builds clean (`tsc`) and all 14 suites pass,
   including a real Vite dev-server e2e.
 - The plugin is dev-server-only (`apply: 'serve'`); it is intentionally absent
   from `vite build`.
