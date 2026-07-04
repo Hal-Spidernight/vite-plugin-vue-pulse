@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import reactivityGraph from '../dist/vite-plugin.js';
 
-const root = path.dirname(fileURLToPath(import.meta.url)) + '/..';
+// analyze the playground (the sample consumer app) as a real project root
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playground');
 let pass = 0, fail = 0;
 const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
 

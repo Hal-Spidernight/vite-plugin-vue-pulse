@@ -34,6 +34,22 @@ importers:
         specifier: ^3.5.0
         version: 3.5.39(typescript@6.0.3)
 
+  playground:
+    dependencies:
+      vue:
+        specifier: ^3.5.0
+        version: 3.5.39(typescript@6.0.3)
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^5.1.0
+        version: 5.2.4(vite@5.4.21(@types/node@26.1.0))(vue@3.5.39(typescript@6.0.3))
+      vite:
+        specifier: ^5.4.0
+        version: 5.4.21(@types/node@26.1.0)
+      vite-plugin-reactivity-graph:
+        specifier: workspace:*
+        version: link:..
+
 packages:
 
   '@babel/helper-string-parser@7.29.7':

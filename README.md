@@ -67,8 +67,8 @@ bindings show up as real loops.
 
 **Circular reactivity** is handled: two-way `watch` sync converges (no runaway),
 and the propagation ripple has a visited-guard so cyclic chains don't hang. (True
-cycle *detection*/reporting — `find_cycle` — lives in the croquis Rust reference
-and the test fixture, not the shipped JS runtime.)
+cycle *detection*/reporting — `find_cycle` — lives in the test fixture today and
+would live in `vize_croquis`'s `find_cycle`, not the shipped JS runtime.)
 
 **Lifecycle:** node identity is component-scoped (`Comp::count`), so two
 components that both declare `count` stay distinct; nodes are removed on
@@ -89,11 +89,11 @@ The static analyzer is **not a hand-rolled clone**. It uses the actual
 The only bespoke layer is the **effect-graph edge builder** — which computed /
 watch / render reads which reactive. That is exactly the piece croquis does not
 yet expose (`effect_graph.rs` ships the model + `find_cycle` but no builder —
-issue #695). `croquis-rust/effect_graph_builder.rs` is the Rust reference for
-upstreaming that builder into `vize_croquis`.
+issue #695); this edge-building logic is what would be upstreamed into
+`vize_croquis` so the static graph could eventually come straight from croquis.
 
 ```bash
-npm run analyze                          # {nodes,edges} JSON + Mermaid for src/App.vue
+npm run analyze                          # {nodes,edges} JSON + Mermaid for playground/src/App.vue
 npx reactivity-graph-analyze Foo.vue …   # same, on any SFC(s)
 ```
 
@@ -117,9 +117,13 @@ from assignments, mutating-method calls, and computed setters.
 
 ```bash
 npm run build   # tsc -> dist/ (.js + .d.ts)   — the published artifact
-npm test        # builds, then runs 11 suites (incl. a real Vite dev-server e2e)
-npm run dev      # demo app; panel auto-mounts (dev only)
+npm test        # builds, then runs 11 suites (incl. a real Vite dev-server e2e over the playground)
+npm run dev     # builds the plugin, then runs the playground/ sample app (panel auto-mounts)
 ```
+
+The **`playground/`** directory is a separate sample Vue app that consumes this
+plugin **by package name** (workspace-linked), i.e. exactly how an installing
+project would — it's both the live demo and the target of the e2e integration test.
 
 Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 `tracedRef`, `mountPanel`, `loadStaticGraph`, `reactivityGraphPlugin`), `./static`
@@ -151,8 +155,7 @@ src/static/
   analyze.ts       static analyzer (vize.parseSfc + oxc + effect-graph builder)
   transform.ts     build-time codemod: ref/reactive/... -> traced (oxc-based)
   cli.ts           CLI -> JSON + Mermaid
-croquis-rust/
-  effect_graph_builder.rs   Rust reference for upstreaming the graph builder into vize_croquis (#695)
+playground/        sample Vue app consuming the plugin by name (demo + e2e target)
 ```
 
 ## Scope / honesty
@@ -162,9 +165,10 @@ croquis-rust/
   including a real Vite dev-server e2e.
 - The plugin is dev-server-only (`apply: 'serve'`); it is intentionally absent
   from `vite build`.
-- Cycle **detection** (`find_cycle`) is in the croquis Rust reference / test
-  fixture, not the shipped JS runtime (which only guards the ripple against
-  looping).
+- Cycle **detection** (`find_cycle`) lives in the test fixture (`scale_cycle`)
+  today, not the shipped JS runtime (which only guards the ripple against
+  looping); it belongs in `vize_croquis`'s `find_cycle` when the builder is
+  upstreamed.
 - Static analysis depends on native packages (`@vizejs/native`, `oxc-parser`);
   these are used Node-side by the plugin/analyzer only — the browser runtime bundle
   does not import them.

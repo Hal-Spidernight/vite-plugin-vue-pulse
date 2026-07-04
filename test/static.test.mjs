@@ -6,7 +6,7 @@ import path from 'node:path';
 import { analyzeSfc } from '../dist/static/analyze.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
-const src = fs.readFileSync(path.join(__dir, '../src/App.vue'), 'utf8');
+const src = fs.readFileSync(path.join(__dir, '../playground/src/App.vue'), 'utf8');
 const g = analyzeSfc(src, 'App.vue');
 
 let pass = 0, fail = 0;

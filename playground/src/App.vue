@@ -1,16 +1,15 @@
 <script setup>
-// NOTE: this is PLAIN Vue — no traced wrappers, no mixin. The Vite plugin's
-// build-time transform rewrites ref/reactive/computed/watch/watchEffect into
-// their traced equivalents automatically, so the devtool discovers every
-// node + edge and lights them up live. Labels are inferred from these variable
-// names. The relationships form a small causal graph:
-//
+// PLAIN Vue — no traced wrappers. The Vite plugin rewrites ref/reactive/computed/
+// watch/watchEffect into their traced equivalents at build time, and the render
+// effect is captured by reactivityGraphPlugin (installed in main.ts). The causal
+// graph:
 //   first, last ──▶ fullName ──▶ greeting ──▶ (watchEffect: document.title)
 //   count ──▶ doubled ──▶ (watch: history)
 //   cart ──▶ total ──▶ (combinedEffect)
 //   celsius ⇄ fahrenheit (two-way sync loop)
-//
+//   greeting ──▶ <Counter> (prop, parent → child)
 import { ref, reactive, computed, watch, watchEffect } from 'vue';
+import Counter from './Counter.vue';
 
 const first = ref('Ada');
 const last = ref('Lovelace');
@@ -42,19 +41,21 @@ function randomName() {
 
 <template>
   <main>
-    <h1>Vue reactivity graph — live demo</h1>
+    <h1>Vue reactivity graph — playground</h1>
     <p class="hint">Mutate state below and watch the panel (bottom-right): nodes glow and pulses travel along the causal edges.</p>
 
     <section>
       <div class="card">
         <h2>name chain</h2>
-        <code>first, last → fullName → greeting → titleEffect</code>
+        <code>first, last → fullName → greeting → titleEffect / &lt;Counter&gt;</code>
         <div class="row">
           <button @click="randomName">randomize first</button>
           <button @click="last = last + '!'">append to last</button>
         </div>
         <p>fullName: <b>{{ fullName }}</b></p>
         <p>greeting: <b>{{ greeting }}</b> (also drives document.title)</p>
+        <!-- parent → child prop -->
+        <Counter :label="greeting" />
       </div>
 
       <div class="card">

@@ -8,4 +8,5 @@ export default defineConfig({
     // vue() first, then the graph plugin (enforce:'post' also guarantees ordering)
     reactivityGraph({ include: ['src/**/*.vue'], autoInject: true }),
   ],
+  
 });

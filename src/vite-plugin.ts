@@ -48,7 +48,9 @@ export interface ReactivityGraphOptions {
 function runtimeEntry(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = ['./reactivity-graph/index.js', './reactivity-graph/index.ts'].map((p) => path.resolve(here, p));
-  return candidates.find((p) => fs.existsSync(p)) || candidates[0];
+  const resolved = candidates.find((p) => fs.existsSync(p)) || candidates[0];
+  // forward slashes so the re-export id resolves on Windows too
+  return resolved.replace(/\\/g, '/');
 }
 
 export default function reactivityGraph(options: ReactivityGraphOptions = {}): Plugin {

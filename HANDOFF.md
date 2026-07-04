@@ -19,8 +19,12 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
 - **Static analysis uses the REAL croquis/vize toolchain** — `@vizejs/native`
   `parseSfc` + `oxc-parser` for the script/template expressions. Babel and
   @vue/compiler-sfc were removed. The effect-graph EDGE builder is the only
-  bespoke layer (the croquis #695 gap). `croquis-rust/effect_graph_builder.rs` is
-  the Rust reference for upstreaming it.
+  bespoke layer (the croquis #695 gap) — the piece that would be upstreamed into
+  `vize_croquis`.
+- **`playground/`** is a separate sample Vue app (workspace member) that consumes
+  the plugin **by package name**; it's the live demo and the e2e integration
+  target. (The old `standalone-demo.html` and the `croquis-rust/` Rust clone were
+  removed — recoverable via git if needed.)
 - **Render effect / components** (`component-plugin.ts` via renderTracked/Triggered,
   `app.use`): template-only state now glows; component nodes; parent→child + props
   edges; provide/inject DI edges (`tracedProvide`/`tracedInject`).
@@ -43,9 +47,9 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
   (the render effect is the one thing the transform can't reach).
 
 ## Next steps (optional)
-1. Upstream `effect_graph_builder.rs` into `vize_croquis` so the static graph comes
-   straight from croquis (then `analyze.ts` becomes a thin adapter). Reuse its
-   `find_cycle` to surface cyclic-computed warnings.
+1. Upstream the effect-graph edge builder into `vize_croquis` so the static graph
+   comes straight from croquis (then `analyze.ts` becomes a thin adapter). Reuse
+   its `find_cycle` to surface cyclic-computed warnings.
 2. Cross-file props/provide-inject static edges via `vize_croquis_cf`'s DependencyGraph.
 3. Pinia/VueUse first-class labeling (state=reactive, getters=computed, actions=writes)
    instead of generic `⟨ext⟩` nodes.
@@ -55,9 +59,9 @@ croquis) + **runtime** ("traffic", live), reconciled by component-scoped label.
 ```
 npm install
 npm run build      # tsc -> dist
-npm test           # build + 11 suites (incl. real Vite e2e)
-npm run dev        # demo; panel auto-mounts (dev only)
-npm run analyze    # static graph JSON + Mermaid for src/App.vue
+npm test           # build + 11 suites (incl. real Vite e2e over the playground)
+npm run dev        # build + run playground/ sample app (panel auto-mounts)
+npm run analyze    # static graph JSON + Mermaid for playground/src/App.vue
 ```
 
 ## Gotchas
