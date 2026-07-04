@@ -307,7 +307,16 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   let dragging = false, spinning = false;
   let lastX = 0, lastY = 0;
   let spinX = 0, spinY = 0;
-  let cameraDirty = false; // set on real camera motion; gates a redraw, never wakes the sim
+  let lastMoveT = 0;        // timestamp of the last pointermove (rejects stale-velocity flings)
+  let cameraDirty = false;  // set on real camera motion; gates a redraw, never wakes the sim
+  let paused = false;
+
+  // "the loop is actually drawing this frame" — the SAME gate the RAF loop uses.
+  // Transient glow/pulse events are only enqueued while this is true so a
+  // collapsed/hidden panel can't accumulate animation state forever.
+  function drawingActive(): boolean {
+    return !paused && !(typeof document !== 'undefined' && document.hidden);
+  }
 
   // pre-multiply a screen-relative increment so the tumble feels "grab & spin"
   // from any orientation (no Euler gimbal lock, no clamps → full 360°)
@@ -327,9 +336,16 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   }
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let sized = false;
   function size() {
-    state.w = opts.width || host.clientWidth || state.w;
-    state.h = opts.height || host.clientHeight || state.h;
+    const nw = opts.width || host.clientWidth || state.w;
+    const nh = opts.height || host.clientHeight || state.h;
+    // a resize event that doesn't change our dimensions must NOT wake the settled
+    // sim (fixed-size panels get one on every window resize) — that would burn a
+    // ~170-step CPU burst and reshuffle a resting cloud for nothing.
+    if (sized && nw === state.w && nh === state.h) return;
+    sized = true;
+    state.w = nw; state.h = nh;
     canvas.width = state.w * dpr;
     canvas.height = state.h * dpr;
     canvas.style.width = state.w + 'px';
@@ -351,8 +367,8 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   const unsub = graph.subscribe((ev) => {
     if (ev.type === 'node' && ev.node) layout.addBody(ev.node);
     else if (ev.type === 'edge' && ev.edge) layout.addSpring(ev.edge);
-    else if (ev.type === 'glow' && ev.nodeId) { const b = bodies.get(ev.nodeId); if (b) b.glow = 1; }
-    else if (ev.type === 'pulse') pulses.push({ from: ev.from!, to: ev.to!, t: 0 });
+    else if (ev.type === 'glow' && ev.nodeId) { if (drawingActive()) { const b = bodies.get(ev.nodeId); if (b) b.glow = 1; } }
+    else if (ev.type === 'pulse') { if (drawingActive()) pulses.push({ from: ev.from!, to: ev.to!, t: 0 }); }
     else if (ev.type === 'remove-node' && ev.nodeId) layout.removeBody(ev.nodeId);
     else if (ev.type === 'remove-edge' && ev.edge) layout.removeSpring(ev.edge);
     else if (ev.type === 'reset') { layout.clear(); pulses.length = 0; }
@@ -371,10 +387,11 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     if (!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
-    const rotY = dx * ROTATE_SPEED; // horizontal drag → spin about screen Y
-    const rotX = dy * ROTATE_SPEED; // vertical drag → spin about screen X (canvas y-down)
+    const rotY = dx * ROTATE_SPEED;  // horizontal drag → spin about screen Y (grabbed point follows the cursor)
+    const rotX = -dy * ROTATE_SPEED; // vertical drag → spin about screen X; negated so it ALSO follows the cursor (canvas y-down + screen y-flip)
     applyRotation(rotX, rotY);
     spinX = rotX; spinY = rotY;      // seed inertia with the last frame's velocity
+    lastMoveT = nowMs();             // timestamp so a held-still release doesn't fling on a stale delta
     cameraDirty = true;              // NB: never layout.wake() — positions don't change
     e.preventDefault();
   }
@@ -383,7 +400,9 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     dragging = false;
     canvas.releasePointerCapture?.(e.pointerId);
     canvas.style.cursor = 'grab';
-    if (Math.hypot(spinX, spinY) > SPIN_MIN) spinning = true; // fling → glide
+    // fling → glide, but ONLY if the pointer was still moving at release; a
+    // deliberate hold-then-release must not launch inertia from a stale velocity
+    if (nowMs() - lastMoveT < 64 && Math.hypot(spinX, spinY) > SPIN_MIN) spinning = true;
   }
   function doReset() {
     camR = mat3Identity(); spinX = 0; spinY = 0; spinning = false; dragging = false;
@@ -536,11 +555,10 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   }
 
   let raf = 0;
-  let paused = false;
   // ONE authoritative gate: draw iff the layout is moving, an animation is
   // active, OR the camera moved this frame — otherwise idle at zero CPU.
   function loop() {
-    if (!paused && !(typeof document !== 'undefined' && document.hidden)) {
+    if (drawingActive()) {
       if (!layout.settled) layout.step();
       stepCamera();
       const anim = pulses.length > 0 || anyGlow();
@@ -558,7 +576,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   return {
     canvas,
     pause() { paused = true; },
-    resume() { paused = false; cameraDirty = true; layout.wake(); },
+    resume() { paused = false; pulses.length = 0; cameraDirty = true; layout.wake(); },
     resetView() { doReset(); },
     destroy() {
       cancelAnimationFrame(raf);
@@ -576,5 +594,6 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
 }
 
 function ease(t: number): number { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+function nowMs(): number { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
 
 export { KIND_STYLE };
