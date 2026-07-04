@@ -39,11 +39,16 @@ export interface StaticAnalysis extends ReactivityGraphExport {
 const REACTIVE_FACTORY: Record<string, string> = {
   ref: 'ref', shallowRef: 'ref', toRef: 'ref', customRef: 'ref',
   reactive: 'reactive', shallowReactive: 'reactive',
+  // readonly/shallowReadonly are traced at runtime as 'reactive' nodes
+  // (tracer.ts registerNode('reactive', …)) — mirror that here so the static map
+  // emits the same node and the two dedup instead of the static side going blank.
+  readonly: 'reactive', shallowReadonly: 'reactive',
   computed: 'computed',
   // compiler macros (no import): defineModel() is a writable ref backed by a prop
   defineModel: 'ref',
   tracedRef: 'ref', tracedShallowRef: 'ref', tracedReactive: 'reactive', tracedComputed: 'computed',
   tracedToRef: 'ref', tracedCustomRef: 'ref',
+  tracedReadonly: 'reactive', tracedShallowReadonly: 'reactive',
 };
 /** factories whose result is an object of refs to destructure (const {a,b} = f(src)) */
 const DESTRUCTURE_FACTORY = new Set(['toRefs', 'storeToRefs', 'tracedToRefs']);
@@ -162,8 +167,11 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
         } else if (d.id.type === 'ObjectPattern') {
           for (const prop of d.id.properties) {
             if (prop.type !== 'Property' || prop.key.type !== 'Identifier') continue;
-            const local = prop.value.type === 'Identifier' ? prop.value.name : prop.key.name;
-            bindings.set(local, { id, kind: 'reactive', key: prop.key.name });
+            // every leaf local a prop destructures into attributes to the single
+            // props node, keyed by the prop name — including nested/defaulted
+            // patterns (`{ a: { b } }`, `{ a = 1 }`) whose leaf isn't the key name.
+            for (const localName of patternLocals(prop.value))
+              bindings.set(localName, { id, kind: 'reactive', key: prop.key.name });
           }
         }
         continue;
@@ -190,7 +198,11 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
           const local = prop.value.type === 'Identifier' ? prop.value.name : prop.key.name;
           const id = addNode(local, 'ref');
           bindings.set(local, { id, kind: 'ref' });
-          if (srcName) addEdge(srcName, id, prop.key.name); // source.key -> destructured ref
+          // only wire source.key -> destructured ref when the source is a known
+          // reactive binding; an untracked source (store / prop / arg) has no
+          // node, so drawing the edge would leave a dangling `from` (the runtime
+          // still shows it via external auto-registration).
+          if (srcName && bindings.has(srcName)) addEdge(srcName, id, prop.key.name);
         }
         continue;
       }
@@ -202,11 +214,13 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       const id = addNode(label, kind === 'computed' ? 'computed' : kind);
       bindings.set(label, { id, kind: kind === 'computed' ? 'computed' : kind });
 
-      // toRef(source, 'key') -> source.key -> this ref edge (the derivation linkage)
+      // toRef(source, 'key') -> source.key -> this ref edge (the derivation linkage).
+      // Only when the source is a known binding — an untracked source has no node,
+      // so the edge would dangle (the runtime rescues it via external auto-register).
       if (callee === 'toRef' || callee === 'tracedToRef') {
         const srcArg = d.init.arguments[0];
         const keyArg = d.init.arguments[1];
-        if (srcArg && srcArg.type === 'Identifier') {
+        if (srcArg && srcArg.type === 'Identifier' && bindings.has(srcArg.name)) {
           const key = keyArg && keyArg.type === 'Literal' && typeof keyArg.value === 'string' ? keyArg.value : undefined;
           addEdge(srcArg.name, id, key);
         }
@@ -224,12 +238,20 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       if (d.id.type !== 'Identifier' || d.init?.type !== 'CallExpression') continue;
       if (!COMPUTED_NAMES.has(calleeName(d.init.callee)!)) continue;
       const toId = nodeId(d.id.name);
-      const getter = d.init.arguments[0];
-      for (const dep of readsIn(getter, bindings)) addEdge(dep.label, toId, dep.key);
-      // writable computed: { get, set } — writes in `set` become write-edges
-      if (getter && getter.type === 'ObjectExpression') {
-        const setProp = getter.properties.find((p: AnyNode) => p.type === 'Property' && p.key.type === 'Identifier' && p.key.name === 'set');
-        if (setProp) for (const w of writesIn(setProp.value, bindings)) addEdge(d.id.name, nodeId(w.label), w.key, 'write');
+      const arg0 = d.init.arguments[0];
+      // reads that feed the computed come from the GETTER only. For the
+      // { get, set } form, walking the whole object literal would also collect
+      // reads inside set() and mint spurious read-edges INTO the computed.
+      const getterBody = arg0 && arg0.type === 'ObjectExpression'
+        ? arg0.properties.find((p: AnyNode) => p.type === 'Property' && p.key.type === 'Identifier' && p.key.name === 'get')?.value
+        : arg0;
+      for (const dep of readsIn(getterBody, bindings)) addEdge(dep.label, toId, dep.key);
+      // writable computed: { get, set } — writes in `set` become write-edges.
+      // Resolve the write target via idOf so a destructured prop local maps to
+      // the real `Comp::props` node instead of a dangling `Comp::<local>`.
+      if (arg0 && arg0.type === 'ObjectExpression') {
+        const setProp = arg0.properties.find((p: AnyNode) => p.type === 'Property' && p.key.type === 'Identifier' && p.key.name === 'set');
+        if (setProp) for (const w of writesIn(setProp.value, bindings)) addEdge(d.id.name, idOf(w.label), w.key, 'write');
       }
     }
   }
@@ -244,12 +266,12 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       const label = stringArg(node.arguments[1]) || effectVarName(parent, node) || `watchEffect#${++anonWatchEffect}`;
       const toId = addNode(label, 'watchEffect');
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
-      for (const w of writesIn(node.arguments[0], bindings)) addEdge(label, nodeId(w.label), w.key, 'write');
+      for (const w of writesIn(node.arguments[0], bindings)) addEdge(label, idOf(w.label), w.key, 'write');
     } else if (name && WATCH_NAMES.has(name)) {
       const label = stringArg(node.arguments[3]) || effectVarName(parent, node) || `watch#${++anonWatch}`;
       const toId = addNode(label, 'watch');
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
-      for (const w of writesIn(node.arguments[1], bindings)) addEdge(label, nodeId(w.label), w.key, 'write');
+      for (const w of writesIn(node.arguments[1], bindings)) addEdge(label, idOf(w.label), w.key, 'write');
     } else if (name === 'provide' || name === 'tracedProvide') {
       // DI endpoint: remember which declaration was provided under which key so
       // mergeStaticGraphs can wire provide -> inject across files.
@@ -336,6 +358,21 @@ export function mergeStaticGraphs(graphs: StaticAnalysis[]): ReactivityGraphExpo
 
 function calleeName(callee: AnyNode): string | null {
   return callee && callee.type === 'Identifier' ? callee.name : null;
+}
+
+/** Every identifier a binding pattern introduces (handles nested object/array
+ *  patterns, defaults and rest), so `{ a: { b }, c = 1, ...rest }` yields b,c,rest. */
+function patternLocals(node: AnyNode): string[] {
+  if (!node) return [];
+  switch (node.type) {
+    case 'Identifier': return [node.name];
+    case 'AssignmentPattern': return patternLocals(node.left);
+    case 'RestElement': return patternLocals(node.argument);
+    case 'ArrayPattern': return (node.elements || []).flatMap((e: AnyNode) => patternLocals(e));
+    case 'ObjectPattern': return (node.properties || []).flatMap((p: AnyNode) =>
+      p.type === 'RestElement' ? patternLocals(p.argument) : patternLocals(p.value));
+    default: return [];
+  }
 }
 
 function stringArg(node: AnyNode): string | null {

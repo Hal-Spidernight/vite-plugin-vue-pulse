@@ -74,6 +74,14 @@ function tag<T extends object>(obj: T, id: string): T {
 // the reactive route, etc.) gets a node keyed by object identity. This is what
 // lets the graph include library/store state without transforming node_modules.
 const externalIds = new WeakMap<object, string>();
+// External nodes are keyed by object identity and have no owning effect scope, so
+// (unlike our own nodes, which drop on onScopeDispose) they get no teardown. Without
+// this a long-lived app that reads many distinct external reactives (store getters,
+// VueUse refs, route objects, …) would grow the graph unboundedly. Tie each external
+// node's lifetime to its source object via GC: once the object is collected, drop the
+// node. (Guarded for environments without FinalizationRegistry.)
+const extFinalizer: FinalizationRegistry<string> | null =
+  typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry((id: string) => graph.removeNode(id)) : null;
 let extSeq = 0;
 function resolveOrRegister(target: any): string | undefined {
   if (!target || typeof target !== 'object') return undefined;
@@ -85,6 +93,7 @@ function resolveOrRegister(target: any): string | undefined {
   const id = `external:${++extSeq}`;
   externalIds.set(target, id);
   graph.addNode(id, `⟨ext⟩ ${kind}${extSeq}`, kind, 'runtime');
+  extFinalizer?.register(target, id);
   return id;
 }
 
@@ -139,14 +148,27 @@ function recordWrite(nodeId: string, key: string | undefined): void {
   if (currentEffect) graph.addEdge(currentEffect, nodeId, key, 'runtime', 'write');
 }
 
+// One wrapper per underlying reactive value, so reading the same value twice
+// returns the SAME proxy — otherwise `state.child === state.child` (and Map/Set
+// keys, memo caches, etc.) would break inside an effect body, altering the
+// debugged app's own behaviour. Keyed by the reactive object (GC-friendly; the
+// wrapper forwards live via Reflect, and recordWrite reads currentEffect
+// dynamically, so a cached wrapper is always correct). Trade-off: a value shared
+// across nodes attributes its writes to the path/node first seen — acceptable for
+// a devtool, and identity correctness for the app matters more.
+const writeWrapCache = new WeakMap<object, any>();
+
 /** Wrap a reactive value read inside an effect so mutations record write-edges. */
 function wrapForWrite(v: any, nodeId: string, path: string): any {
   if (!currentEffect || !v || typeof v !== 'object' || !isReactive(v)) return v;
+  const cached = writeWrapCache.get(v);
+  if (cached) return cached;
   const raw = toRaw(v);
   const isArr = Array.isArray(raw);
   const isColl = isCollection(raw);
-  if (isArr || isColl) return methodRecorder(v, nodeId, path, isArr, isColl);
-  return plainChild(v, nodeId, path);
+  const wrapped = (isArr || isColl) ? methodRecorder(v, nodeId, path, isArr, isColl) : plainChild(v, nodeId, path);
+  writeWrapCache.set(v, wrapped);
+  return wrapped;
 }
 
 function methodRecorder(v: any, nodeId: string, path: string, isArr: boolean, isColl: boolean): any {

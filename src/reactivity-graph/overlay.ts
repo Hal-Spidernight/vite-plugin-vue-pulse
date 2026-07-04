@@ -246,7 +246,12 @@ export function createForceLayout(width: number, height: number, tune: Partial<L
       // latitude (golden-ratio sequence) so incrementally-added points spread
       // over a sphere shell instead of collapsing into a plane or onto each other
       const i = placed++;
-      const rad0 = 10 + 7 * Math.sqrt(i);
+      // radius from the LIVE body count, not the monotonic `placed`: after churn
+      // (many add/remove cycles) `placed` >> live count, so `sqrt(placed)` would
+      // spawn new nodes far outside the bounding sphere (then slowly spring back
+      // in, burning a settle burst). `i` still drives the golden angle/latitude so
+      // incrementally-added directions stay evenly spread.
+      const rad0 = 10 + 7 * Math.sqrt(bodies.size);
       const phi = i * GOLDEN_ANGLE;
       const zt = ((i * 0.61803398875) % 1) * 2 - 1;      // ∈ (-1, 1), evenly spread
       const ring = Math.sqrt(Math.max(0, 1 - zt * zt));

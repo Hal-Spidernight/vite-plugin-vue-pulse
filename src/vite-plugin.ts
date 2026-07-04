@@ -82,6 +82,20 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
     apply: 'serve',
     // run AFTER @vitejs/plugin-vue so we transform the already-extracted <script>
     enforce: 'post',
+    // The runtime (graph store + tracer + panel) is a process-wide singleton
+    // (`export const graph = new ReactivityGraph()`). The build-time transform and
+    // the auto-injected panel reach it via `virtual:vue-pulse/runtime` (the raw
+    // packaged file). But a consumer following the README ALSO imports from the
+    // bare `vite-plugin-vue-pulse/runtime` subpath (`app.use(reactivityGraphPlugin)`).
+    // When the package is a normal node_modules install, Vite's dep optimizer
+    // pre-bundles that bare subpath into a SEPARATE module with its OWN
+    // `new ReactivityGraph()` — so render-effect tracking (boundary flash + template
+    // rings + render cascade) would fire on a second, unrendered graph and vanish
+    // silently. Excluding the package from pre-bundling makes the bare subpath
+    // resolve to the same raw file as the virtual module → one shared singleton.
+    config() {
+      return { optimizeDeps: { exclude: ['vite-plugin-vue-pulse', 'vite-plugin-vue-pulse/runtime'] } };
+    },
     configResolved(cfg) { root = cfg.root; },
     resolveId(id) {
       if (id === VIRTUAL_STATIC) return RESOLVED_STATIC;
