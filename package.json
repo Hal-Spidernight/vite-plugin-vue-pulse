@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-vue-pulse",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "repository": {
     "type": "git",
@@ -16,6 +16,10 @@
     "visualization"
   ],
   "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/issues"
+  },
+  "homepage": "https://github.com/Hal-Spidernight/vite-plugin-vue-pulse#readme",
   "exports": {
     ".": {
       "types": "./dist/vite-plugin.d.ts",
