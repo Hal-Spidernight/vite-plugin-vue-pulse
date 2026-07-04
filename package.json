@@ -1,7 +1,11 @@
 {
   "name": "vite-plugin-vue-pulse",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hal-Spidernight/vite-plugin-vue-pulse.git"
+  },
   "description": "Dev-only Vite plugin that visualizes Vue reactivity (ref/reactive/computed/watch/watchEffect) as a live, glowing dependency graph — declarations are nodes, components are boundaries/filter tags; static map + runtime traffic.",
   "keywords": [
     "vue",
