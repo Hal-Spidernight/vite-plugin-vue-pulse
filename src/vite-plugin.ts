@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
-import launchEditor from 'launch-editor';
+import { openInEditor } from './open-in-editor.js';
 import { analyzeSfc, mergeStaticGraphs } from './static/analyze.js';
 import type { StaticAnalysis } from './static/analyze.js';
 import { transformReactivity } from './static/transform.js';
@@ -102,14 +102,15 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
     configResolved(cfg) { root = cfg.root; },
     // click-to-jump: the panel's "jump" button hits this endpoint, which opens the
     // node's declaration in the user's running editor (VS Code / Cursor / WebStorm /
-    // vim …, auto-detected by launch-editor). Dev-server only, like the rest.
+    // vim …, auto-detected). VS Code-family editors get the file's workspace folder
+    // passed along, so the jump lands in the window owning the file — not whichever
+    // window was focused last. Dev-server only, like the rest.
     configureServer(server) {
       server.middlewares.use('/__vue_pulse_open', (req, res) => {
         try {
           const q = new URL(req.url || '', 'http://localhost').searchParams.get('file');
-          // file = "<path>:<line>:<col>"; only allow files under the project root
-          const p = q ? path.resolve(root, q.split(':')[0]) : '';
-          if (p && p.startsWith(root) && fs.existsSync(p)) launchEditor(q!);
+          // file = "<path>:<line>:<col>"; only files under the project root open
+          if (q) openInEditor(q, root);
         } catch { /* ignore malformed requests */ }
         res.statusCode = 204;
         res.end();

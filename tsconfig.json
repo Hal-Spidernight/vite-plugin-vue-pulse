@@ -25,6 +25,7 @@
   "include": [
     "src/reactivity-graph",
     "src/static",
+    "src/open-in-editor.ts",
     "src/vite-plugin.ts"
   ],
   "exclude": ["node_modules", "dist", "test", "src/App.vue", "src/main.ts"]
