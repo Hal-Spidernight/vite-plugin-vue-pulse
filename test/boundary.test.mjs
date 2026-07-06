@@ -79,10 +79,13 @@ const centroidDist = Math.hypot(cA.x - cB.x, cA.y - cB.y, cA.z - cB.z);
 ok(centroidDist > radius(cA) + radius(cB),
   `boundaries are separated, not overlapping (centroids ${centroidDist.toFixed(1)} apart > radii ${radius(cA).toFixed(1)} + ${radius(cB).toFixed(1)})`);
 
-console.log('[many boundaries stay separated in the 2D projection]');
-// The real fuzz case: dozens of tiny components at once. Tight clustering +
-// inter-cluster repulsion must keep the DRAWN hull circles mostly non-overlapping
-// (regression guard — a naive layout piles them: overlapRate was ~0.62 at 40 scopes).
+console.log('[many boundaries stay separated in the default (auto-fit) view]');
+// The real fuzz case: dozens of components at once. Rather than cramming them into
+// a fixed sphere (which piled the hulls — overlapRate was ~0.62 at 40 scopes), the
+// sim GROWS its clamp radius with the scope count so components reach their natural
+// spacing; the camera frames that grown radius and the default view auto-fits the
+// whole cloud (zoom = base/radius). This block reproduces that exact view and
+// asserts the hulls stay mostly separated and the sphere actually grew.
 {
   const W = 460, H = 360;
   const many = createForceLayout(W, H);
@@ -98,10 +101,13 @@ console.log('[many boundaries stay separated in the 2D projection]');
   }
   for (let g = 1; g < 40; g++) if (rnd() < 0.5) many.addSpring({ from: groups[g - 1][0], to: groups[g][0], origin: 'runtime', kind: 'read' });
   let st = 0; while (!many.settled && st < 5000) { many.step(); st++; }
-  // project at the identity camera exactly like overlay draw() (zoom 1)
-  const cx = W / 2, cy = H / 2, Rb = boundingRadius(W, H), CAM = Rb * 2.6;
+  const base = boundingRadius(W, H), Rgrown = many.radius;
+  ok(Rgrown > base * 1.5, `the sphere grows with the scope count (radius ${Rgrown.toFixed(0)} > ${(base * 1.5).toFixed(0)}) — components spread instead of cramming`);
+  // reproduce the default view exactly: camera frames the GROWN radius + auto-fit zoom
+  const cx = W / 2, cy = H / 2, CAM = Rgrown * 2.6;
+  const zoom = Math.max(0.05, Math.min(8, base / Rgrown));
   const proj = new Map();
-  for (const b of many.bodies.values()) { const sc = CAM / Math.max(CAM - b.z, 1); proj.set(b.id, { sx: cx + b.x * sc, sy: cy + b.y * sc, scale: sc }); }
+  for (const b of many.bodies.values()) { const sc = zoom * CAM / Math.max(CAM - b.z, 1); proj.set(b.id, { sx: cx + b.x * sc, sy: cy + b.y * sc, scale: sc }); }
   // build one hull circle per scope with the same formula as drawBoundaries()
   const hulls = new Map();
   for (const b of many.bodies.values()) { const p = proj.get(b.id); let hl = hulls.get(b.scope); if (!hl) hulls.set(b.scope, hl = { sx: 0, sy: 0, n: 0, r: 0 }); hl.sx += p.sx; hl.sy += p.sy; hl.n++; }
@@ -114,11 +120,11 @@ console.log('[many boundaries stay separated in the 2D projection]');
   let pairs = 0, over = 0, sumR = 0;
   for (let i = 0; i < H2.length; i++) { sumR += H2[i].r; for (let j = i + 1; j < H2.length; j++) { pairs++; if (Math.hypot(H2[i].sx - H2[j].sx, H2[i].sy - H2[j].sy) < H2[i].r + H2[j].r) over++; } }
   const rate = over / pairs, meanR = sumR / H2.length;
-  // guards the BALANCE the tool wants: far fewer overlaps than a naive layout
-  // (baseline was ~0.62 at 40 scopes) while hulls stay large/legible, NOT collapsed
-  // to tight dots (the first fix over-tightened; the user wanted bigger circles).
-  ok(rate < 0.40, `40 boundaries mostly don't overlap in projection (overlapRate ${rate.toFixed(3)} < 0.40, baseline ~0.62)`);
-  ok(meanR > 35, `boundary hulls stay large enough to read (mean hull radius ${meanR.toFixed(1)}px > 35, not collapsed)`);
+  // guards the BALANCE the tool wants: in the whole-cloud default view, far fewer
+  // overlaps than the old crammed layout (~0.62 at 40 scopes) while hulls stay
+  // large/legible (not collapsed to dots). Zooming in separates them further.
+  ok(rate < 0.35, `40 boundaries mostly don't overlap in the default view (overlapRate ${rate.toFixed(3)} < 0.35, baseline ~0.62)`);
+  ok(meanR > 30, `boundary hulls stay large enough to read (mean hull radius ${meanR.toFixed(1)}px > 30, not collapsed)`);
 }
 
 console.log('[filter tag API + deterministic boundary colors]');
@@ -134,6 +140,11 @@ ov.setScopeVisible('A', false);
 ov.setScopeVisible('A', true);
 ov.setScopeVisible('', false); // the global group is filterable too
 ok(true, 'toggling scope visibility does not throw');
+ok(typeof ov.setKindVisible === 'function', 'overlay exposes setKindVisible (per-kind filter)');
+ov.setKindVisible('ref', false);
+ov.setKindVisible('ref', true);
+ov.setKindVisible('computed', false);
+ok(true, 'toggling kind visibility does not throw');
 ok(/^hsla\(/.test(scopeColor('App')) && scopeColor('App') === scopeColor('App'), 'scopeColor is deterministic per boundary');
 
 console.log('[wheel → zoom: event wiring + view-only invariant]');

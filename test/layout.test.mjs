@@ -93,8 +93,8 @@ ok(Math.abs(ratioAt1 - ratioAt2) < 1e-12, 'equal notches feel equal at any zoom 
 // equality, so a silently narrowed range or a nerfed ZOOM_SPEED both fail here
 let zHi = 1; for (let i = 0; i < 200; i++) zHi = applyZoom(zHi, -1000);
 let zLo = 1; for (let i = 0; i < 200; i++) zLo = applyZoom(zLo, 1000);
-ok(zHi === 4 && zLo === 0.25,
-  `sustained scroll saturates at the clamp bounds [0.25, 4] (got ${zLo}..${zHi})`);
+ok(zHi === 8 && zLo === 0.05,
+  `sustained scroll saturates at the clamp bounds [0.05, 8] (got ${zLo}..${zHi})`);
 // a line-scroll wheel (deltaMode 1) normalizes to ≈16px per line
 ok(Math.abs(applyZoom(1, 3, 1) - applyZoom(1, 48, 0)) < 1e-12, 'deltaMode 1 (lines) normalizes to px (1 line ≈ 16px)');
 // a page-scroll wheel (deltaMode 2) normalizes via the given page size

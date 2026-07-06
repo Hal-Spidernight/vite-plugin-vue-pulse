@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
+import launchEditor from 'launch-editor';
 import { analyzeSfc, mergeStaticGraphs } from './static/analyze.js';
 import type { StaticAnalysis } from './static/analyze.js';
 import { transformReactivity } from './static/transform.js';
@@ -68,7 +69,9 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
     const graphs: StaticAnalysis[] = [];
     for (const f of files) {
       try {
-        graphs.push(analyzeSfc(fs.readFileSync(f, 'utf8'), path.basename(f)));
+        // pass the ABSOLUTE path so each node's loc can drive the IDE jump; scope
+        // (the component name) is still derived from the basename inside analyzeSfc.
+        graphs.push(analyzeSfc(fs.readFileSync(f, 'utf8'), f));
       } catch (err: any) {
         console.warn('[reactivity-graph] failed to analyze', f, err?.message);
       }
@@ -97,6 +100,21 @@ export default function reactivityGraph(options: ReactivityGraphOptions = {}): P
       return { optimizeDeps: { exclude: ['vite-plugin-vue-pulse', 'vite-plugin-vue-pulse/runtime'] } };
     },
     configResolved(cfg) { root = cfg.root; },
+    // click-to-jump: the panel's "jump" button hits this endpoint, which opens the
+    // node's declaration in the user's running editor (VS Code / Cursor / WebStorm /
+    // vim …, auto-detected by launch-editor). Dev-server only, like the rest.
+    configureServer(server) {
+      server.middlewares.use('/__vue_pulse_open', (req, res) => {
+        try {
+          const q = new URL(req.url || '', 'http://localhost').searchParams.get('file');
+          // file = "<path>:<line>:<col>"; only allow files under the project root
+          const p = q ? path.resolve(root, q.split(':')[0]) : '';
+          if (p && p.startsWith(root) && fs.existsSync(p)) launchEditor(q!);
+        } catch { /* ignore malformed requests */ }
+        res.statusCode = 204;
+        res.end();
+      });
+    },
     resolveId(id) {
       if (id === VIRTUAL_STATIC) return RESOLVED_STATIC;
       if (id === VIRTUAL_RUNTIME) return RESOLVED_RUNTIME;

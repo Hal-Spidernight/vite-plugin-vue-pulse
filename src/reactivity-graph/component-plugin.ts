@@ -41,6 +41,15 @@ function resolveRenderDep(inst: any, e: DebuggerEvent): string | undefined {
 }
 
 export function reactivityGraphPlugin(app: App, options: ReactivityGraphPluginOptions = {}): App {
+  // Dev-only devtool: a production build makes this a COMPLETE no-op — no mixin is
+  // installed, nothing renders, zero per-component cost. Because Vite replaces both
+  // `import.meta.env` and `import.meta.env.PROD` with literals in the build, in
+  // production this reads `if (true) return app` and the whole body below (plus its
+  // now-unused runtime imports) is dead-code eliminated. The `&&` short-circuits
+  // safely outside a Vite build (this package's Node tests / non-Vite hosts) where
+  // `import.meta.env` is undefined, so the plugin stays active there.
+  if ((import.meta as any).env && (import.meta as any).env.PROD) return app;
+
   const cascadeOnRender = options.cascadeOnRender !== false;
 
   app.mixin({

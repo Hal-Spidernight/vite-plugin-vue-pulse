@@ -43,15 +43,28 @@ export default {
 ```
 
 ```ts
-// main.ts — one line adds render-effect / component tracking
-import { reactivityGraphPlugin } from 'vite-plugin-vue-pulse/runtime'
-createApp(App).use(reactivityGraphPlugin).mount('#app')
+// main.ts — adds render-effect / component tracking, DEV ONLY.
+// Behind `import.meta.env.DEV` + a dynamic import so the plugin and its runtime are
+// tree-shaken out of the production build entirely (zero bundle cost, nothing runs).
+const app = createApp(App)
+if (import.meta.env.DEV) {
+  const { reactivityGraphPlugin } = await import('vite-plugin-vue-pulse/runtime')
+  app.use(reactivityGraphPlugin)
+}
+app.mount('#app')
 ```
 
 The panel auto-mounts bottom-right in dev. You **write plain Vue** — the plugin's
 build-time transform rewrites `ref/reactive/computed/watch/…` into traced
 equivalents automatically (no `tracedRef`, no mixin, no source changes). It is
 `apply: 'serve'` — dev-server only, never part of a production build.
+
+**Nothing ships to production.** The build-time transform and the auto-mounted
+panel are `apply: 'serve'`, so `vite build` never sees them. The one piece that
+lives in your own source — `app.use(reactivityGraphPlugin)` — is gated above so it
+is dropped from the production bundle; and as a safety net `reactivityGraphPlugin`
+is itself a no-op when `import.meta.env.PROD`, so even an un-gated `app.use(...)`
+installs nothing and renders nothing in a production build.
 
 ## What's monitored
 
@@ -143,6 +156,12 @@ project would — it's both the live demo and the target of the e2e integration 
 Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 `tracedRef`, `mountPanel`, `loadStaticGraph`, `reactivityGraphPlugin`), `./static`
 (the analyzer). `vue` and `vite` are peer dependencies.
+
+**Releasing:** version bumps, the `CHANGELOG.md`, git tags and the npm publish are
+driven by [changelogen](https://github.com/unjs/changelogen) from Conventional
+Commits — `pnpm changelog` previews, `pnpm release` / `pnpm release:minor` cut a
+release. See [`RELEASING.md`](./RELEASING.md) for the full flow and the pre-1.0
+version-bump rules.
 
 ## Tests
 

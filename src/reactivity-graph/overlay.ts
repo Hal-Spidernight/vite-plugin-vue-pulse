@@ -35,6 +35,8 @@ const KIND_STYLE: Record<NodeKind, KindStyle> = {
   computed:    { color: '#34d399', ring: '#6ee7b7', label: 'computed' },
   watch:       { color: '#fbbf24', ring: '#fcd34d', label: 'watch' },
   watchEffect: { color: '#fb7185', ring: '#fda4af', label: 'watchEffect' },
+  // component input (defineProps) — a boundary's entry point, not internal state
+  props:       { color: '#f97316', ring: '#fdba74', label: 'props' },
 };
 
 /**
@@ -119,16 +121,32 @@ export const DEFAULT_TUNING: LayoutTuning = {
 
 // margin between the bounding sphere and the panel edge (in px)
 const NODE_MARGIN = 40;
+// how many component boundaries fit at the BASE (viewport-sized) sphere before the
+// sim grows the sphere to make room. Beyond this the clamp radius scales ∝ √scopes
+// so a busy graph SPREADS OUT (extending past the frame) at a consistent per-
+// component size instead of being crammed into overlap — the user zooms/pans to
+// navigate, and the view auto-fits the whole cloud by default.
+const SPREAD_THRESHOLD = 6;
 
 /**
- * The radius of the model-space bounding sphere the layout is clamped to, AND
- * the framing radius the projection uses to fit the cloud in the panel. This is
- * the SINGLE source of truth shared by (a) the sim's sphere clamp, (b) draw()'s
- * camera framing, and (c) the layout test's containment assertion — so they can
- * never drift out of sync.
+ * The BASE model-space radius: the framing radius draw()'s camera uses (a body at
+ * this radius fills the panel at zoom 1) and the sim's clamp for small graphs. The
+ * layout test's containment assertion shares it too, so they never drift apart.
  */
 export function boundingRadius(w: number, h: number): number {
   return Math.max(40, 0.5 * Math.min(w, h) - NODE_MARGIN);
+}
+
+/**
+ * The sim's actual clamp radius: the base radius, grown ∝ √(scope count) once past
+ * SPREAD_THRESHOLD so many components reach their natural spacing (spilling beyond
+ * the frame) rather than compressing into an overlapping ball. Camera framing stays
+ * on boundingRadius, so growth makes the cloud extend past the frame (navigate by
+ * zoom/pan), and the default view auto-fits it.
+ */
+export function spreadRadius(w: number, h: number, scopeCount: number): number {
+  const base = boundingRadius(w, h);
+  return scopeCount > SPREAD_THRESHOLD ? base * Math.sqrt(scopeCount / SPREAD_THRESHOLD) : base;
 }
 
 /* ------------------------------------------------------------------ *
@@ -213,6 +231,8 @@ export interface ForceLayout {
   bodies: Map<string, Body>;
   springs: Spring[];
   readonly settled: boolean;
+  /** current model-space bounding-sphere radius (grows with the number of scopes) */
+  readonly radius: number;
   addBody(node: GraphNode): Body;
   addSpring(edge: GraphEdge): void;
   removeBody(id: string): void;
@@ -227,18 +247,22 @@ export function createForceLayout(width: number, height: number, tune: Partial<L
   const T: LayoutTuning = { ...DEFAULT_TUNING, ...tune };
   const bodies = new Map<string, Body>();
   const springs: Spring[] = [];
+  // live count of bodies per scope → distinct-scope count drives the clamp radius
+  const scopeCounts = new Map<string, number>();
   let w = width, h = height;
   let R = boundingRadius(w, h);
   let placed = 0;
   let alpha = 1;
   let settled = false;
+  const recomputeRadius = () => { R = spreadRadius(w, h, scopeCounts.size); };
 
   return {
     bodies,
     springs,
     get settled() { return settled; },
+    get radius() { return R; },
     wake() { settled = false; alpha = 1; },
-    resize(nw, nh) { w = nw; h = nh; R = boundingRadius(w, h); this.wake(); },
+    resize(nw, nh) { w = nw; h = nh; recomputeRadius(); this.wake(); },
     addBody(node) {
       const found = bodies.get(node.id);
       if (found) return found;
@@ -251,7 +275,10 @@ export function createForceLayout(width: number, height: number, tune: Partial<L
       // spawn new nodes far outside the bounding sphere (then slowly spring back
       // in, burning a settle burst). `i` still drives the golden angle/latitude so
       // incrementally-added directions stay evenly spread.
-      const rad0 = 10 + 7 * Math.sqrt(bodies.size);
+      // scale the initial shell by how much the sphere has grown (R vs base) so a
+      // large, spread-out graph doesn't spawn everything bunched at the centre and
+      // then have to travel out within the finite cooling window.
+      const rad0 = (10 + 7 * Math.sqrt(bodies.size)) * (R / boundingRadius(w, h));
       const phi = i * GOLDEN_ANGLE;
       const zt = ((i * 0.61803398875) % 1) * 2 - 1;      // ∈ (-1, 1), evenly spread
       const ring = Math.sqrt(Math.max(0, 1 - zt * zt));
@@ -264,12 +291,15 @@ export function createForceLayout(width: number, height: number, tune: Partial<L
         vx: 0, vy: 0, vz: 0, glow: 0,
       };
       bodies.set(node.id, b);
+      if (node.scope) { scopeCounts.set(node.scope, (scopeCounts.get(node.scope) || 0) + 1); recomputeRadius(); }
       this.wake();
       return b;
     },
     addSpring(edge) { springs.push({ ...edge }); this.wake(); },
     removeBody(id) {
+      const b = bodies.get(id);
       bodies.delete(id);
+      if (b?.scope) { const c = (scopeCounts.get(b.scope) || 1) - 1; if (c <= 0) scopeCounts.delete(b.scope); else scopeCounts.set(b.scope, c); recomputeRadius(); }
       for (let i = springs.length - 1; i >= 0; i--) if (springs[i].from === id || springs[i].to === id) springs.splice(i, 1);
       this.wake();
     },
@@ -280,7 +310,7 @@ export function createForceLayout(width: number, height: number, tune: Partial<L
       }
       this.wake();
     },
-    clear() { bodies.clear(); springs.length = 0; this.wake(); },
+    clear() { bodies.clear(); springs.length = 0; scopeCounts.clear(); recomputeRadius(); this.wake(); },
     step() {
       if (settled) return;
       const arr = [...bodies.values()];
@@ -397,6 +427,14 @@ export interface OverlayHandle {
    * never reshuffles the layout.
    */
   setScopeVisible(scope: string, visible: boolean): void;
+  /**
+   * Filter by node kind (ref / reactive / computed / watch / watchEffect / props).
+   * View-only, like the scope filter — the sim keeps all bodies, so toggling never
+   * reshuffles the layout.
+   */
+  setKindVisible(kind: string, visible: boolean): void;
+  /** clear the clicked-node selection (highlight ring) without notifying onPick */
+  clearSelection(): void;
   destroy(): void;
 }
 
@@ -406,8 +444,10 @@ const INERTIA_DECAY = 0.94;  // spin velocity retained per frame (~1s glide)
 const SPIN_MIN = 0.0008;     // below this angular speed the spin stops (idle)
 const CAM_DIST_MULT = 2.6;   // camera distance = CAM_DIST_MULT · boundingRadius
 const ZOOM_SPEED = 0.0015;   // zoom factor per px of wheel delta (exponential)
-const ZOOM_MIN = 0.25;       // fully zoomed out — the cloud at 1/4 size
-const ZOOM_MAX = 4;          // fully zoomed in
+// wide range: a big spread-out graph needs to zoom WAY out to frame the whole
+// cloud, and way in to inspect one component among a hundred.
+const ZOOM_MIN = 0.05;       // fully zoomed out
+const ZOOM_MAX = 8;          // fully zoomed in
 
 /**
  * Next zoom level after a wheel delta. Exponential (multiplicative) so equal
@@ -424,7 +464,7 @@ export function applyZoom(zoom: number, deltaY: number, deltaMode = 0, pageSize 
 
 interface Proj { xr: number; yr: number; zr: number; scale: number; sx: number; sy: number }
 
-export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLElement; width?: number; height?: number } = {}): OverlayHandle {
+export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLElement; width?: number; height?: number; onPick?: (id: string | null) => void } = {}): OverlayHandle {
   const host = opts.container || document.body;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
@@ -438,19 +478,29 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   const scopeFlash = new Map<string, number>();
   /** hidden filter tags ('' = the scopeless group) */
   const hiddenScopes = new Set<string>();
-  const bodyVisible = (b: Body) => !hiddenScopes.has(b.scope || '');
+  /** hidden node kinds (ref/reactive/computed/watch/watchEffect/props) */
+  const hiddenKinds = new Set<string>();
+  const bodyVisible = (b: Body) => !hiddenScopes.has(b.scope || '') && !hiddenKinds.has(b.kind);
 
   // ── camera (view-only; the sim never sees this) ──────────────────────────
   // accumulated orientation as a 3x3 rotation matrix; spin* are the angular
   // velocities (rad/frame about the screen X/Y axes) that drive inertia.
   let camR: Mat3 = mat3Identity();
   let zoom = 1; // screen-space magnification (wheel); multiplies the projection scale
-  let dragging = false, spinning = false;
+  let panX = 0, panY = 0;  // screen-space translation (shift-drag) about the panel centre
+  let selectedId: string | null = null;      // clicked node → highlight + onPick
+  let lastProj = new Map<string, Proj>();     // last frame's projection, for click hit-testing
+  let downX = 0, downY = 0;                   // pointerdown position (click vs drag discrimination)
+  let dragging = false, spinning = false, panning = false;
   let lastX = 0, lastY = 0;
   let spinX = 0, spinY = 0;
   let lastMoveT = 0;        // timestamp of the last pointermove (rejects stale-velocity flings)
   let cameraDirty = false;  // set on real camera motion; gates a redraw, never wakes the sim
   let paused = false;
+  // until the user first zooms/pans, the view AUTO-FITS the whole (possibly grown)
+  // cloud into the panel each frame → a busy graph shows up small-but-separated by
+  // default; the first manual zoom/pan hands control over and stops the auto-fit.
+  let userAdjusted = false;
 
   // "the loop is actually drawing this frame" — the SAME gate the RAF loop uses.
   // Transient glow/pulse events are only enqueued while this is true so a
@@ -520,24 +570,37 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     }
     else if (ev.type === 'template' && ev.nodeId) { const b = bodies.get(ev.nodeId); if (b && !b.template) { b.template = true; cameraDirty = true; } }
     else if (ev.type === 'boundary' && ev.scope) { if (drawingActive() && !hiddenScopes.has(ev.scope)) scopeFlash.set(ev.scope, 1); }
-    else if (ev.type === 'remove-node' && ev.nodeId) layout.removeBody(ev.nodeId);
+    else if (ev.type === 'remove-node' && ev.nodeId) {
+      if (selectedId === ev.nodeId) { selectedId = null; opts.onPick?.(null); } // don't leave the code panel pointing at a gone node
+      layout.removeBody(ev.nodeId);
+    }
     else if (ev.type === 'remove-edge' && ev.edge) layout.removeSpring(ev.edge);
-    else if (ev.type === 'reset') { layout.clear(); pulses.length = 0; scopeFlash.clear(); }
+    else if (ev.type === 'reset') { layout.clear(); pulses.length = 0; scopeFlash.clear(); if (selectedId) { selectedId = null; opts.onPick?.(null); } }
   });
 
-  // ── drag-to-rotate (pointer + touch, with capture so a drag can leave the canvas) ──
+  // ── drag: plain = rotate, SHIFT = pan (pointer + touch, with capture so a drag
+  // can leave the canvas) ──
   function onPointerDown(e: PointerEvent) {
     if (paused) return;
     dragging = true; spinning = false; spinX = 0; spinY = 0;
+    panning = e.shiftKey;              // shift-drag translates; plain drag rotates
+    if (panning) userAdjusted = true;  // a manual pan hands control over (stop auto-fit)
     lastX = e.clientX; lastY = e.clientY;
+    downX = e.clientX; downY = e.clientY; // to tell a click (pick a node) from a drag
     canvas.setPointerCapture?.(e.pointerId);
-    canvas.style.cursor = 'grabbing';
+    canvas.style.cursor = panning ? 'move' : 'grabbing';
     e.preventDefault();
   }
   function onPointerMove(e: PointerEvent) {
     if (!dragging) return;
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     lastX = e.clientX; lastY = e.clientY;
+    if (panning) {                     // shift-drag → translate the view (screen px)
+      panX += dx; panY += dy;
+      cameraDirty = true;
+      e.preventDefault();
+      return;
+    }
     const rotY = dx * ROTATE_SPEED;  // horizontal drag → spin about screen Y (grabbed point follows the cursor)
     const rotX = -dy * ROTATE_SPEED; // vertical drag → spin about screen X; negated so it ALSO follows the cursor (canvas y-down + screen y-flip)
     applyRotation(rotX, rotY);
@@ -551,9 +614,31 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     dragging = false;
     canvas.releasePointerCapture?.(e.pointerId);
     canvas.style.cursor = 'grab';
+    const wasPanning = panning; panning = false;
+    // a barely-moved press is a CLICK → pick the node under the cursor (not a drag)
+    if (!wasPanning && Math.hypot(e.clientX - downX, e.clientY - downY) < 5) { pickAt(e.clientX, e.clientY); return; }
+    if (wasPanning) return; // a pan never flings
     // fling → glide, but ONLY if the pointer was still moving at release; a
     // deliberate hold-then-release must not launch inertia from a stale velocity
     if (nowMs() - lastMoveT < 64 && Math.hypot(spinX, spinY) > SPIN_MIN) spinning = true;
+  }
+  // click hit-test against the last frame's projection: the front-most (largest zr)
+  // visible node whose drawn circle contains the cursor. Selecting emits onPick and
+  // highlights it; clicking empty space clears the selection.
+  function pickAt(clientX: number, clientY: number) {
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left, y = clientY - rect.top;
+    let hit: string | null = null, bestZ = -Infinity;
+    for (const b of bodies.values()) {
+      if (!bodyVisible(b)) continue;
+      const p = lastProj.get(b.id);
+      if (!p) continue;
+      const r = Math.max(9 * p.scale, 8); // clickable radius (min 8px so tiny far nodes are still hittable)
+      if (Math.hypot(p.sx - x, p.sy - y) <= r && p.zr > bestZ) { hit = b.id; bestZ = p.zr; }
+    }
+    selectedId = hit;
+    cameraDirty = true;
+    opts.onPick?.(hit);
   }
   // wheel → zoom: view-only like rotation (redraw, never wake the sim). Also
   // covers trackpad pinch on Chromium/Firefox (reported as ctrl+wheel; Safari's
@@ -562,12 +647,15 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   // { passive: false }, since engines may treat wheel listeners as passive by default.
   function onWheel(e: WheelEvent) {
     if (paused) return;
+    userAdjusted = true;   // manual zoom hands control over (stop auto-fit)
     zoom = applyZoom(zoom, e.deltaY, e.deltaMode, state.h);
     cameraDirty = true;
     e.preventDefault();
   }
   function doReset() {
-    camR = mat3Identity(); zoom = 1; spinX = 0; spinY = 0; spinning = false; dragging = false;
+    camR = mat3Identity(); zoom = 1; panX = 0; panY = 0;
+    spinX = 0; spinY = 0; spinning = false; dragging = false; panning = false;
+    userAdjusted = false;  // re-enable auto-fit → snaps back to framing the whole cloud
     cameraDirty = true;
   }
   canvas.addEventListener('pointerdown', onPointerDown);
@@ -593,9 +681,13 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
   function draw() {
     ctx.clearRect(0, 0, state.w, state.h);
 
-    // per-frame camera framing (recomputed from state so resize just works)
+    // per-frame camera framing (recomputed from state so resize just works).
+    // Frame the ACTUAL cloud radius (which grows with the scope count) rather than
+    // the fixed panel radius, so perspective stays consistent as the sphere grows
+    // and near bodies never approach/cross the camera plane. panX/panY (shift-drag)
+    // then translate the whole projection about the panel centre.
     const cx = state.w / 2, cy = state.h / 2;
-    const Rb = boundingRadius(state.w, state.h);
+    const Rb = layout.radius;
     const CAM_DIST = Rb * CAM_DIST_MULT;
     const FOCAL = CAM_DIST; // base scale = 1 at the equator (zr = 0)
     const m0 = camR[0], m1 = camR[1], m2 = camR[2];
@@ -609,7 +701,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       // zoom multiplies the perspective scale → the whole scene (positions AND
       // node/label sizes) magnifies about the panel centre, perspective intact
       const scale = zoom * FOCAL / Math.max(CAM_DIST - zr, 1);
-      return { xr, yr, zr, scale, sx: cx + xr * scale, sy: cy + yr * scale };
+      return { xr, yr, zr, scale, sx: cx + xr * scale + panX, sy: cy + yr * scale + panY };
     };
 
     // project every body once; track the model radius for a rotation-invariant
@@ -621,6 +713,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       const rm = Math.hypot(b.x, b.y, b.z);
       if (rm > Rmodel) Rmodel = rm;
     }
+    lastProj = proj; // keep the freshest projection for click hit-testing
 
     drawBoundaries(proj, Rmodel);
 
@@ -768,9 +861,19 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       ctx.arc(p.sx, p.sy, r + 3 * scale, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // label only for near/front nodes (declutter at scale)
-    if (fog < 0.5 && scale >= 0.95) {
-      ctx.globalAlpha = clamp01((0.5 - fog) / 0.5);
+    // clicked-node highlight: a bright ring at full opacity (visible at any depth),
+    // so the node whose code the panel is showing is unmistakable.
+    if (b.id === selectedId) {
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.lineWidth = Math.max(1.5, 2 * scale);
+      ctx.strokeStyle = '#f8fafc';
+      ctx.arc(p.sx, p.sy, r + 6 * scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // label only for near/front nodes (declutter at scale) — always for the selected
+    if ((fog < 0.5 && scale >= 0.95) || b.id === selectedId) {
+      ctx.globalAlpha = b.id === selectedId ? 1 : clamp01((0.5 - fog) / 0.5);
       ctx.fillStyle = '#e5e7eb';
       ctx.font = `${Math.max(8, Math.round(11 * scale))}px ui-monospace, monospace`;
       ctx.textAlign = 'center';
@@ -790,6 +893,17 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     ctx.globalAlpha = 1;
   }
 
+  // auto-fit: until the user takes over (zoom/pan), keep the WHOLE cloud framed by
+  // matching zoom to the base/actual-radius ratio. As the sphere grows with the
+  // scope count the view zooms out to keep everything visible (small but separated).
+  // Only nudges zoom when it actually changes, so a settled view stays at zero CPU.
+  function autoFit() {
+    if (userAdjusted) return;
+    const target = boundingRadius(state.w, state.h) / layout.radius;
+    const clamped = target < ZOOM_MIN ? ZOOM_MIN : target > ZOOM_MAX ? ZOOM_MAX : target;
+    if (Math.abs(clamped - zoom) > 1e-4) { zoom = clamped; cameraDirty = true; }
+  }
+
   let raf = 0;
   // ONE authoritative gate: draw iff the layout is moving, an animation is
   // active, OR the camera moved this frame — otherwise idle at zero CPU.
@@ -797,6 +911,7 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
     if (drawingActive()) {
       if (!layout.settled) layout.step();
       stepCamera();
+      autoFit();
       const anim = pulses.length > 0 || anyGlow() || scopeFlash.size > 0;
       if (anim) animate();
       if (!layout.settled || anim || cameraDirty) draw();
@@ -822,6 +937,12 @@ export function mountOverlay(graph: ReactivityGraph, opts: { container?: HTMLEle
       else { hiddenScopes.add(scope); scopeFlash.delete(scope); }
       cameraDirty = true; // view-only: redraw, never reshuffle the layout
     },
+    setKindVisible(kind, visible) {
+      if (visible) hiddenKinds.delete(kind);
+      else hiddenKinds.add(kind);
+      cameraDirty = true; // view-only: redraw, never reshuffle the layout
+    },
+    clearSelection() { if (selectedId) { selectedId = null; cameraDirty = true; } },
     destroy() {
       cancelAnimationFrame(raf);
       unsub();

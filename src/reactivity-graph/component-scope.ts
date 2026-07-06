@@ -38,7 +38,7 @@ export function ensurePropsNode(inst: any): string | undefined {
   const raw = toRaw(props);
   const id = `${compName(inst)}::props`;
   try { if (!('__vgId' in raw)) Object.defineProperty(raw, '__vgId', { value: id, enumerable: false, configurable: true }); } catch { /* ignore */ }
-  graph.addNode(id, 'props', 'reactive', 'runtime');
+  graph.addNode(id, 'props', 'props', 'runtime');
   propsFor.set(inst, id);
   return id;
 }

@@ -363,13 +363,28 @@ export function tracedToRef(...args: any[]) {
 }
 
 /**
- * toRefs(source): a plain object of refs, one per key of `source`. Passthrough —
- * each destructured ref reads a key of `source`, so when it is read inside a
- * traced effect Vue's `onTrack` already reports `(source, key)` and the
- * dependency lands on the source reactive's node. (No phantom node is created.)
+ * toRefs(source): a plain object of refs, one per key of `source`. Unlike a plain
+ * `reactive` (which stays ONE object-level node with keyed edges), the refs a
+ * `toRefs`/destructure produces are used as standalone bindings, so each gets its
+ * OWN node — `Comp::key`, the exact id the static analyzer emits for the
+ * destructured local — plus a keyed `source -> key` read edge (the same treatment
+ * `tracedToRef` gives a single key). Static map + runtime therefore dedup to one
+ * node per destructured ref. The transform's trailing label arg is unused (we
+ * label each ref by its key). Refs are wrapped in-place so `.value` writes inside
+ * an effect still record write-edges; works for array sources too.
  */
 export function tracedToRefs(source: any, _label?: string) {
-  return toRefs(source);
+  const refs: any = toRefs(source);
+  const srcId = resolveOrRegister(source);
+  for (const key of Object.keys(refs)) {
+    const r = refs[key];
+    if (!r || typeof r !== 'object') continue;
+    const id = registerNode('ref', key);
+    tag(r, id);
+    if (srcId) graph.addEdge(srcId, id, key, 'runtime', 'read');
+    refs[key] = writeProxy(r, id, true);
+  }
+  return refs;
 }
 
 /**

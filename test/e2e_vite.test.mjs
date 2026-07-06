@@ -4,15 +4,16 @@
 // playground's real config and drives transformRequest, so plugin ordering
 // (enforce:'post'), the build-time transform on real .vue files, decoupled
 // virtual-runtime injection, and auto-inject are all exercised through Vite.
+import { describe, it, expect } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createServer } from 'vite';
 
 const playground = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playground');
+const ok = (c, m) => expect(c, m).toBeTruthy();
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
-
+describe('e2e_vite', () => {
+  it('boots the real playground Vite server and drives the plugin through transforms', async () => {
 const server = await createServer({
   configFile: path.join(playground, 'vite.config.ts'), // loads the plugin BY NAME
   root: playground,
@@ -43,8 +44,7 @@ try {
   const stat = await server.transformRequest('virtual:vue-pulse/static');
   ok(!!stat && /staticGraph/.test(stat.code) && /first/.test(stat.code), 'virtual static map resolves with analyzed nodes');
 } finally {
-  server.close().catch(() => {}); // can hang in middlewareMode; process.exit tears down
+  await server.close().catch(() => {}); // middlewareMode teardown
 }
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});
