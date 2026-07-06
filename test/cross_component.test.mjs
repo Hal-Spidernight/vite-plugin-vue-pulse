@@ -56,7 +56,7 @@ ok([...graph.nodes.values()].every((n) => !String(n.label).startsWith('⟨ext⟩
 
 console.log('[props declaration]');
 const props = graph.nodes.get('Child::props');
-ok(!!props && props.label === 'props' && props.kind === 'reactive', 'child props declaration node Child::props');
+ok(!!props && props.label === 'props' && props.kind === 'props', "child props declaration node Child::props (kind 'props', a boundary input, not a plain reactive)");
 ok(props?.scope === 'Child', 'props node lives in the Child boundary');
 ok(props?.template === true, 'props read by the child template → render-dep flag');
 

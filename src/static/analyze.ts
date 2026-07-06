@@ -23,7 +23,7 @@
  */
 import { parseSync } from 'oxc-parser';
 import { parseSfc } from '@vizejs/native';
-import type { NodeKind, EdgeKind, ReactivityGraphExport } from '../reactivity-graph/types.js';
+import type { NodeKind, EdgeKind, NodeLoc, ReactivityGraphExport } from '../reactivity-graph/types.js';
 
 type AnyNode = any;
 interface Binding { id: string; kind: string; key?: string }
@@ -73,7 +73,7 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): StaticAnalysi
   // runtime scope (Vue sets `inst.type.__name` to the same), so static and runtime
   // nodes reconcile instead of duplicating.
   const name = String(filename).split('/').pop()!.replace(/\.\w+$/, '');
-  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, scope: name });
+  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, scope: name, file: String(filename).split('/').pop() });
 }
 
 export interface AnalyzeOptions {
@@ -81,13 +81,18 @@ export interface AnalyzeOptions {
   template?: string;
   /** component name used to scope node keys (matches the runtime's `inst.type.__name`) */
   scope?: string;
+  /** source file basename, recorded on each node's `loc` for click-to-view-code */
+  file?: string;
 }
+
+/** longest source snippet stored per node (keeps the static-graph JSON bounded) */
+const MAX_SNIPPET = 600;
 
 export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAnalysis {
   const ast = code.trim() ? parseModule(code) : { body: [] };
 
   const bindings = new Map<string, Binding>();
-  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static'; scope?: string; template?: boolean }> = [];
+  const nodes: Array<{ id: string; label: string; kind: NodeKind; origin: 'static'; scope?: string; template?: boolean; loc?: NodeLoc }> = [];
   const edges = new Map<string, { from: string; to: string; key?: string; origin: 'static'; kind: EdgeKind }>();
   const provides: Array<{ key: string; id: string }> = [];
   const injects: Array<{ key: string; id: string }> = [];
@@ -117,6 +122,15 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       nodes.push(n);
     }
     return id;
+  };
+  // record where a node was declared (source snippet + line) from the AST node that
+  // introduced it, so clicking the node in the panel can show its code. First write
+  // wins (the real declaration), so a later reference never clobbers it.
+  const setLoc = (id: string, astNode: AnyNode) => {
+    const n = nodes.find((x) => x.id === id);
+    if (!n || n.loc || !astNode || astNode.start == null || astNode.end == null) return;
+    const snippet = code.slice(astNode.start, astNode.end);
+    n.loc = { file: opts.file, line: lineOf(code, astNode.start), snippet: snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '…' : snippet };
   };
   /** resolve a binding name to its node id (destructured defineProps locals all map to `Comp::props`) */
   const idOf = (label: string) => bindings.get(label)?.id ?? nodeId(label);
@@ -161,7 +175,8 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       // consumed — `const props = defineProps(...)` or destructured locals (which
       // the runtime render tracker also attributes to the props object).
       if (callee === 'defineProps') {
-        const id = addNode('props', 'reactive');
+        const id = addNode('props', 'props');
+        setLoc(id, stmt);
         if (d.id.type === 'Identifier') {
           bindings.set(d.id.name, { id, kind: 'reactive' });
         } else if (d.id.type === 'ObjectPattern') {
@@ -182,6 +197,7 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       if (d.id.type === 'Identifier' && (callee === 'inject' || callee === 'tracedInject')) {
         const label = d.id.name;
         const id = addNode(label, 'ref');
+        setLoc(id, stmt);
         bindings.set(label, { id, kind: 'ref' });
         const keyArg = d.init.arguments[callee === 'tracedInject' ? 1 : 0];
         const key = keyArg && keyArg.type === 'Literal' && typeof keyArg.value === 'string' ? keyArg.value : null;
@@ -197,6 +213,7 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
           if (prop.type !== 'Property' || prop.key.type !== 'Identifier') continue;
           const local = prop.value.type === 'Identifier' ? prop.value.name : prop.key.name;
           const id = addNode(local, 'ref');
+          setLoc(id, stmt);
           bindings.set(local, { id, kind: 'ref' });
           // only wire source.key -> destructured ref when the source is a known
           // reactive binding; an untracked source (store / prop / arg) has no
@@ -212,6 +229,7 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
       if (!kind) continue;
       const label = d.id.name;
       const id = addNode(label, kind === 'computed' ? 'computed' : kind);
+      setLoc(id, stmt);
       bindings.set(label, { id, kind: kind === 'computed' ? 'computed' : kind });
 
       // toRef(source, 'key') -> source.key -> this ref edge (the derivation linkage).
@@ -265,11 +283,13 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
     if (name && WATCHEFFECT_NAMES.has(name)) {
       const label = stringArg(node.arguments[1]) || effectVarName(parent, node) || `watchEffect#${++anonWatchEffect}`;
       const toId = addNode(label, 'watchEffect');
+      setLoc(toId, parent && parent.type === 'VariableDeclarator' ? parent : node);
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
       for (const w of writesIn(node.arguments[0], bindings)) addEdge(label, idOf(w.label), w.key, 'write');
     } else if (name && WATCH_NAMES.has(name)) {
       const label = stringArg(node.arguments[3]) || effectVarName(parent, node) || `watch#${++anonWatch}`;
       const toId = addNode(label, 'watch');
+      setLoc(toId, parent && parent.type === 'VariableDeclarator' ? parent : node);
       for (const dep of readsIn(node.arguments[0], bindings)) addEdge(dep.label, toId, dep.key);
       for (const w of writesIn(node.arguments[1], bindings)) addEdge(label, idOf(w.label), w.key, 'write');
     } else if (name === 'provide' || name === 'tracedProvide') {
@@ -315,7 +335,7 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
           let sub: AnyNode;
           try { sub = parseModule(`(${expr});`); } catch { continue; }
           for (const dep of readsIn(sub, bindings)) {
-            addForeignNode(childProps, 'props', 'reactive');
+            addForeignNode(childProps, 'props', 'props');
             addEdge(dep.label, childProps, prop);
             if (twoWay) rawEdge(childProps, idOf(dep.label), prop, 'write');
           }
@@ -340,7 +360,7 @@ export function mergeStaticGraphs(graphs: StaticAnalysis[]): ReactivityGraphExpo
   for (const g of graphs) {
     for (const n of g.nodes) {
       const prev = nodes.get(n.id);
-      if (prev) { if (n.template) prev.template = true; }
+      if (prev) { if (n.template) prev.template = true; if (n.loc && !prev.loc) prev.loc = n.loc; }
       else nodes.set(n.id, { ...n });
     }
     for (const e of g.edges) edges.set(`${e.from}->${e.to}#${e.key || ''}#${e.kind || 'read'}`, e);

@@ -14,10 +14,10 @@
  * onto one graph, reconciled by (scoped) label.
  */
 import type {
-  NodeKind, EdgeKind, Origin, GraphNode, GraphEdge, GraphEvent, ReactivityGraphExport,
+  NodeKind, EdgeKind, Origin, GraphNode, GraphEdge, GraphEvent, NodeLoc, ReactivityGraphExport,
 } from './types.js';
 
-export type { NodeKind, EdgeKind, Origin, GraphNode, GraphEdge, GraphEvent, ReactivityGraphExport };
+export type { NodeKind, EdgeKind, Origin, GraphNode, GraphEdge, GraphEvent, NodeLoc, ReactivityGraphExport };
 
 type ScheduleFn = (fn: () => void, ms: number) => void;
 
@@ -108,6 +108,16 @@ export class ReactivityGraph {
   glow(nodeId: string): void {
     if (!this.nodes.has(nodeId)) return;
     this.emit({ type: 'glow', nodeId });
+  }
+
+  /**
+   * Attach a source location + snippet to a node (from the static analyzer). First
+   * write wins, so a runtime-created node picks it up when the static map loads,
+   * regardless of load order. Drives the panel's click-to-view-code.
+   */
+  setLocation(nodeId: string, loc: NodeLoc): void {
+    const node = this.nodes.get(nodeId);
+    if (node && !node.loc) node.loc = loc;
   }
 
   /** Flag a declaration as read by its component's template (render dependency). */

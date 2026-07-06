@@ -6,15 +6,33 @@
  * graph. Keep them in sync against this file.
  */
 
-export type NodeKind = 'ref' | 'reactive' | 'computed' | 'watch' | 'watchEffect';
+// 'props' is a distinct kind, not just a reactive: Vue's props object is a
+// shallowReactive under the hood, but semantically it's the component BOUNDARY's
+// input (the terminus of a `<Child :p="expr">` cross-component edge), not internal
+// state you declared — so it gets its own colour/legend entry.
+export type NodeKind = 'ref' | 'reactive' | 'computed' | 'watch' | 'watchEffect' | 'props';
 export type EdgeKind = 'read' | 'write';
 export type Origin = 'static' | 'runtime';
+
+/**
+ * Where a declaration lives in source — captured by the static analyzer so the
+ * panel can show the code for a node when you click it. `line` is 1-based within
+ * the component's `<script>`; `snippet` is the declaration's source text (may be
+ * truncated). Absent on runtime-only nodes the static map never covered.
+ */
+export interface NodeLoc {
+  file?: string;
+  line?: number;
+  snippet?: string;
+}
 
 export interface GraphNode {
   id: string;
   label: string;
   kind: NodeKind;
   origin: Origin;
+  /** source location + snippet (static analyzer only) — drives click-to-view-code */
+  loc?: NodeLoc;
   /**
    * Component the declaration belongs to (derived from the `Comp::label` id).
    * Components are NOT nodes — a node is a declaration / reactivity-API usage —
