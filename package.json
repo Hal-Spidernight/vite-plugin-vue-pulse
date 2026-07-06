@@ -1,5 +1,5 @@
 {
-  "name": "vite-plugin-vue-pulse",
+  "name": "@hal-spidernight/vite-plugin-vue-pulse",
   "version": "0.3.2",
   "packageManager": "pnpm@9.15.9",
   "type": "module",
@@ -48,7 +48,8 @@
     "node": ">=18"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "changelog": {
     "templates": {
