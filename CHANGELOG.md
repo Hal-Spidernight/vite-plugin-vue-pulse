@@ -5,6 +5,34 @@ Generated from [Conventional Commits](https://www.conventionalcommits.org) by [c
 
 > **Unreleased** — run `pnpm changelog` to preview the changes on the current branch that will land in the next release.
 
+## v0.3.0
+
+[compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.2.3...v0.3.0)
+
+### 🚀 Enhancements
+
+- Node-ify each toRefs/destructured ref (reactive stays object-level) ([fa75a1e](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/fa75a1e))
+- Spread-out layout, view navigation, click-to-view-code, props kind, per-kind filter ([2bb5317](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/2bb5317))
+- Make the devtool a complete no-op in production builds ([1ed0508](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/1ed0508))
+- Recording mode — capture propagation as an acyclic flow (DAG) + English UI ([6b4e387](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/6b4e387))
+- Jump to editor from a node + absolute source location ([0d0ae0f](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/0d0ae0f))
+
+### 🩹 Fixes
+
+- Tests ([b29b7be](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/b29b7be))
+
+### 🏡 Chore
+
+- Automate changelog + releases with changelogen ([cb81e72](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/cb81e72))
+
+### ✅ Tests
+
+- Migrate suite from custom harness to vitest ([96c6525](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/96c6525))
+
+### ❤️ Contributors
+
+- Hal <hal.spidernight@gmail.com>
+
 ## v0.2.3 - 2026-07-05
 [compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.2.2...v0.2.3)
 
