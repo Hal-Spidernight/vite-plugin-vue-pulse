@@ -5,6 +5,18 @@ Generated from [Conventional Commits](https://www.conventionalcommits.org) by [c
 
 > **Unreleased** — run `pnpm changelog` to preview the changes on the current branch that will land in the next release.
 
+## v0.3.5
+
+[compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.3.4...v0.3.5)
+
+### 🚀 Enhancements
+
+- Open IDE with workspace ([3da2afd](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/3da2afd))
+
+### ❤️ Contributors
+
+- Hal <hal.spidernight@gmail.com>
+
 ## v0.3.4
 
 [compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.3.3...v0.3.4)
