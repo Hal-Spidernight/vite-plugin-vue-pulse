@@ -73,7 +73,13 @@ export function analyzeSfc(source: string, filename = 'Anon.vue'): StaticAnalysi
   // runtime scope (Vue sets `inst.type.__name` to the same), so static and runtime
   // nodes reconcile instead of duplicating.
   const name = String(filename).split('/').pop()!.replace(/\.\w+$/, '');
-  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, scope: name, file: String(filename).split('/').pop() });
+  // line 1 of the joined script maps to this line in the actual .vue file, so a
+  // recorded NodeLoc.line points at the REAL source (for click-to-view / IDE jump),
+  // not the offset within the extracted <script>.
+  const first = parts[0] || '';
+  const off = first ? source.indexOf(first) : -1;
+  const baseLine = off >= 0 ? lineOf(source, off) : 1;
+  return analyzeScript(parts.join('\n'), { template: desc?.template?.content, scope: name, file: filename, baseLine });
 }
 
 export interface AnalyzeOptions {
@@ -81,8 +87,11 @@ export interface AnalyzeOptions {
   template?: string;
   /** component name used to scope node keys (matches the runtime's `inst.type.__name`) */
   scope?: string;
-  /** source file basename, recorded on each node's `loc` for click-to-view-code */
+  /** source file path recorded on each node's `loc` (absolute when the plugin passes
+   *  it) — drives click-to-view-code and the IDE jump */
   file?: string;
+  /** SFC line the extracted `<script>` starts on, so `loc.line` maps to the real file */
+  baseLine?: number;
 }
 
 /** longest source snippet stored per node (keeps the static-graph JSON bounded) */
@@ -130,7 +139,9 @@ export function analyzeScript(code: string, opts: AnalyzeOptions = {}): StaticAn
     const n = nodes.find((x) => x.id === id);
     if (!n || n.loc || !astNode || astNode.start == null || astNode.end == null) return;
     const snippet = code.slice(astNode.start, astNode.end);
-    n.loc = { file: opts.file, line: lineOf(code, astNode.start), snippet: snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '…' : snippet };
+    // map the script-relative line to the real .vue line via baseLine
+    const line = (opts.baseLine ?? 1) - 1 + lineOf(code, astNode.start);
+    n.loc = { file: opts.file, line, snippet: snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '…' : snippet };
   };
   /** resolve a binding name to its node id (destructured defineProps locals all map to `Comp::props`) */
   const idOf = (label: string) => bindings.get(label)?.id ?? nodeId(label);

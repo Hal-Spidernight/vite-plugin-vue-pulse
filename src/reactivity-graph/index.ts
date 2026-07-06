@@ -99,15 +99,21 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   codeTitle.style.cssText = 'font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   const codeLoc = document.createElement('span');
   codeLoc.style.cssText = 'opacity:.6;white-space:nowrap;';
+  const codeJump = document.createElement('button');
+  codeJump.textContent = '⤴ jump';
+  codeJump.title = 'Open this declaration in your editor';
+  codeJump.style.cssText = 'margin-left:auto;background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;padding:2px 8px;cursor:pointer;font:11px ui-monospace,monospace;flex:none;';
   const codeClose = document.createElement('button');
   codeClose.textContent = '✕';
   codeClose.title = 'close';
-  codeClose.style.cssText = 'margin-left:auto;background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;width:20px;height:20px;cursor:pointer;flex:none;';
-  codeHead.append(codeTitle, codeLoc, codeClose);
+  codeClose.style.cssText = 'background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;width:20px;height:20px;cursor:pointer;flex:none;';
+  codeHead.append(codeTitle, codeLoc, codeJump, codeClose);
   const codePre = document.createElement('pre');
   codePre.style.cssText = 'margin:0;padding:0 10px 10px;max-height:180px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:#e2e8f0;white-space:pre;';
   codeView.append(codeHead, codePre);
-  graphView.appendChild(codeView);
+  // codeView lives at the panel bottom, OUTSIDE the tab views, so a click on either
+  // a graph node OR a recorded-flow node can show its code (and jump).
+  body.appendChild(codeView);
 
   // legend doubles as a per-KIND filter: clicking a swatch shows/hides every node
   // of that kind. Populated after the overlay is created (needs `ov`).
@@ -119,23 +125,30 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
 
   // clicking a node shows its source location + snippet in the code view; clicking
   // empty space (id=null) closes it. Kinds are colored to match the graph legend.
+  let jumpTarget: string | null = null; // "<absPath>:<line>" for the IDE jump, or null
   const showCode = (id: string | null) => {
     const node = id ? graph.nodes.get(id) : undefined;
-    if (!node) { codeView.style.display = 'none'; return; }
+    if (!node) { codeView.style.display = 'none'; jumpTarget = null; return; }
     const color = (KIND_STYLE[node.kind] || KIND_STYLE.ref).color;
     codeTitle.innerHTML = `<span style="color:${color}">●</span> ${escapeHtml(node.label)}`
       + `<span style="opacity:.5"> · ${node.kind}${node.scope ? ` · ⟨${escapeHtml(node.scope)}⟩` : ''}</span>`;
     const loc = node.loc;
-    codeLoc.textContent = loc && loc.file ? `${loc.file}${loc.line ? ':' + loc.line : ''}` : '';
+    const base = loc?.file ? loc.file.split(/[\\/]/).pop() : '';   // show basename, jump with the abs path
+    codeLoc.textContent = loc && loc.file ? `${base}${loc.line ? ':' + loc.line : ''}` : '';
     codePre.textContent = loc?.snippet
       ? loc.snippet
       : '// no source location — this node was seen only at runtime\n// (not covered by the static analysis of your .vue files)';
+    // the IDE jump needs an absolute path + line — only static-analysed nodes have it
+    jumpTarget = loc && loc.file && loc.line ? `${loc.file}:${loc.line}` : null;
+    codeJump.style.display = jumpTarget ? 'inline-block' : 'none';
     codeView.style.display = 'block';
   };
 
   const ov = mountOverlay(graph, { container: graphHost, width: opts.width || 460, height: opts.height || 360, onPick: showCode });
   recenter.onclick = () => ov.resetView();
   codeClose.onclick = () => { codeView.style.display = 'none'; ov.clearSelection(); };
+  // jump → ask the dev server to open the declaration in the running editor
+  codeJump.onclick = () => { if (jumpTarget) fetch('/__vue_pulse_open?file=' + encodeURIComponent(jumpTarget)).catch(() => { /* no dev middleware (e.g. prod/tests) */ }); };
 
   // legend = per-kind filter: click a swatch to show/hide every node of that kind
   // (view-only, mirrors the scope chips; dimmed when hidden). Then the help text.
@@ -303,9 +316,17 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   const FW = opts.width || 460, FH = 200;
   const fdpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
   flowCanvas.width = FW * fdpr; flowCanvas.height = FH * fdpr;
-  flowCanvas.style.cssText = `width:${FW}px;height:${FH}px;display:block;`;
+  flowCanvas.style.cssText = `width:${FW}px;height:${FH}px;display:block;cursor:pointer;`;
   const fctx = flowCanvas.getContext('2d') as CanvasRenderingContext2D;
   fctx.setTransform(fdpr, 0, 0, fdpr, 0, 0);
+  // clicking a node in the flow shows its code (same code view + jump as the graph)
+  flowCanvas.onclick = (e: MouseEvent) => {
+    const rect = flowCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    let hit: string | null = null, best = 12;
+    for (const [id, p] of flowPos) { const d = Math.hypot(p.x - x, p.y - y); if (d < best) { best = d; hit = id; } }
+    if (hit) showCode(hit);
+  };
 
   const out = document.createElement('textarea');
   out.readOnly = true;
@@ -347,8 +368,10 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   };
 
   // draw the selected flow as a left→right layered DAG (level = BFS depth)
+  let flowPos = new Map<string, { x: number; y: number }>(); // last-drawn node screen positions, for click hit-testing
   const drawFlow = (session: PropagationSession | null) => {
     fctx.clearRect(0, 0, FW, FH);
+    flowPos = new Map();
     if (!session || !session.steps.length) return;
     const nodeLevel = new Map<string, number>([[session.origin, 0]]);
     for (const st of session.steps) if (!nodeLevel.has(st.to)) nodeLevel.set(st.to, st.level);
@@ -361,6 +384,7 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
       const rowH = FH / (ids.length + 1);
       ids.forEach((id, i) => pos.set(id, { x: colW * (lv + 0.5), y: rowH * (i + 1) }));
     }
+    flowPos = pos; // expose for click hit-testing
     for (const st of session.steps) {
       const a = pos.get(st.from), b = pos.get(st.to);
       if (!a || !b) continue;
