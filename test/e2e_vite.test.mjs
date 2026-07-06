@@ -18,7 +18,13 @@ const server = await createServer({
   configFile: path.join(playground, 'vite.config.ts'), // loads the plugin BY NAME
   root: playground,
   logLevel: 'silent',
-  server: { middlewareMode: true },
+  // Headless one-shot: we only drive transformRequest, never serve. Without these,
+  // middlewareMode leaves the esbuild dep-optimizer + chokidar watcher holding open
+  // handles, and `server.close()` never resolves — the test hangs until timeout.
+  // Disabling dep discovery + the watcher lets teardown finish promptly. None of the
+  // transform assertions depend on pre-bundled deps.
+  server: { middlewareMode: true, watch: null, hmr: false },
+  optimizeDeps: { noDiscovery: true, include: [] },
 });
 
 try {
