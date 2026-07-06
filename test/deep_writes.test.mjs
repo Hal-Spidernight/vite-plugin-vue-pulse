@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 // Deep write capture (#5) + toRef linkage (#6), verified against real Vue.
 //   - array mutation through a ref:      list.value.push(x)        -> write-edge
 //   - collection mutation:               map.set(k,v) / set.add(x) -> write-edge
@@ -11,8 +12,9 @@ import {
   tracedRef, tracedReactive, tracedWatch, tracedWatchEffect, tracedToRef,
 } from '../dist/reactivity-graph/tracer.js';
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('deep_writes', () => {
+it('captures deep write-edges and toRef linkage against real Vue', async () => {
 const lbl = (id) => graph.nodes.get(id)?.label;
 const writeEdge = (f, t) => [...graph.edges.values()].some((e) => e.kind === 'write' && lbl(e.from) === f && lbl(e.to) === t);
 const readEdge = (f, t, k) => [...graph.edges.values()].some((e) => e.kind === 'read' && lbl(e.from) === f && lbl(e.to) === t && (k === undefined || e.key === k));
@@ -62,8 +64,7 @@ async function main() {
 
   console.log('[toRef linkage]');
   ok(readEdge('state', 'nickname', 'name'), 'toRef: state -> nickname (keyed "name" read-edge)');
-
-  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
 }
-main();
+await main();
+});
+});

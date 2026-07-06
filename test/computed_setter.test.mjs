@@ -1,10 +1,12 @@
+import { describe, it, expect } from 'vitest';
 // Write-edges from watch callbacks (arg 2) and computed setters.
 import { nextTick } from 'vue';
 import { graph } from '../dist/reactivity-graph/graph.js';
 import { tracedRef, tracedComputed, tracedWatch } from '../dist/reactivity-graph/tracer.js';
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('computed_setter', () => {
+it('captures write-edges from computed setters and watch callbacks', async () => {
 const lbl = (id) => graph.nodes.get(id)?.label;
 const hasEdge = (f, t, k) => [...graph.edges.values()].some((e) => lbl(e.from) === f && lbl(e.to) === t && (!k || e.kind === k));
 
@@ -39,8 +41,7 @@ async function main() {
   ok(hasEdge('fullName', 'first', 'write'), 'fullName -> first (write, computed setter)');
   ok(hasEdge('fullName', 'last', 'write'), 'fullName -> last (write, computed setter)');
   ok(hasEdge('mirrorWatch', 'mirror', 'write'), 'mirrorWatch -> mirror (write, watch callback / arg 2)');
-
-  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
 }
-main();
+await main();
+});
+});

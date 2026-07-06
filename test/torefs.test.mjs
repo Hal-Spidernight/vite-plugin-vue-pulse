@@ -2,6 +2,7 @@
 // but the refs a `toRefs` destructure produces each get their OWN node (Comp::key)
 // + a keyed source->key edge — and that runtime node-ification RECONCILES with the
 // static analyzer's per-binding nodes (one node each, not duplicates).
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -18,8 +19,9 @@ const { tracedReactive, tracedToRefs, tracedComputed } = await import('../dist/r
 const { reactivityGraphPlugin } = await import('../dist/reactivity-graph/component-plugin.js');
 const { analyzeSfc } = await import('../dist/static/analyze.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('torefs', () => {
+it('keeps reactive as one node while destructured toRefs get their own, reconciled with static', async () => {
 const byLabel = (l) => [...graph.nodes.values()].filter((n) => n.label === l);
 const idsOf = () => [...graph.nodes.values()].map((n) => n.id).sort();
 const hasEdge = (from, to, key) => [...graph.edges.values()].some((e) => e.from === from && e.to === to && (key === undefined || e.key === key));
@@ -70,6 +72,5 @@ ok(byLabel('apples')[0].origin === 'runtime', 'apples node reconciled: static co
 // the destructured ref nodes are distinct ids from the reactive object node
 ok(graph.nodes.has('App::cart') && graph.nodes.has('App::apples') && graph.nodes.has('App::pears'),
   'cart / apples / pears are three distinct nodes');
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+});
+});

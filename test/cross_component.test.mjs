@@ -2,6 +2,7 @@
 // declaration is a real node (`Child::props`, from defineProps), inject is a
 // declaration with a DI edge from the provided node, and NO component/render
 // nodes exist — against a real client mount (happy-dom).
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -16,8 +17,9 @@ const { graph } = await import('../dist/reactivity-graph/graph.js');
 const { tracedRef, tracedProvide, tracedInject } = await import('../dist/reactivity-graph/tracer.js');
 const { reactivityGraphPlugin } = await import('../dist/reactivity-graph/component-plugin.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('cross_component', () => {
+it('tracks cross-component flow with components as a boundary against a real client mount', async () => {
 const L = (id) => graph.nodes.get(id)?.label;
 const edge = (from, to) => [...graph.edges.values()].some((e) => L(e.from) === from && L(e.to) === to);
 
@@ -80,6 +82,5 @@ await nextTick();
 ok(!graph.nodes.get('Child::props'), 'Child::props removed on unmount');
 ok(!graph.nodes.get('Consumer::t'), 'Consumer::t removed on unmount');
 ok(!graph.nodes.get('Root::theme'), 'Root::theme removed on unmount');
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+});
+});

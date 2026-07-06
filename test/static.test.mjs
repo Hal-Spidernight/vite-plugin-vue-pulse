@@ -1,5 +1,6 @@
 // Verify the static analyzer recovers the same causal edges the runtime tracer
 // discovers — from source alone, without running the app.
+import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -9,8 +10,9 @@ const __dir = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(__dir, '../playground/src/App.vue'), 'utf8');
 const g = analyzeSfc(src, 'App.vue');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('static', () => {
+  it('static analyzer recovers the same causal edges as the runtime tracer', async () => {
 
 const labelOf = (id) => g.nodes.find((n) => n.id === id)?.label;
 const edgeLabels = g.edges.map((e) => `${labelOf(e.from)}->${labelOf(e.to)}`);
@@ -51,5 +53,5 @@ ok(g.nodes.find((n) => n.label === 'first')?.scope === 'App', 'nodes carry their
 ok(g.nodes.some((n) => n.id === 'Counter::props' && n.label === 'props'), 'child props declaration node Counter::props (from the parent template)');
 ok(g.edges.some((e) => e.from === 'App::greeting' && e.to === 'Counter::props' && e.key === 'label'), 'greeting -> Counter::props (:label binding, cross-boundary)');
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

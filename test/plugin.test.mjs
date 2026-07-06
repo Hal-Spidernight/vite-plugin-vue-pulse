@@ -1,12 +1,14 @@
 // Verify the Vite plugin without booting a dev server: drive its hooks directly.
+import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import reactivityGraph from '../dist/vite-plugin.js';
 
 // analyze the playground (the sample consumer app) as a real project root
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playground');
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('plugin', () => {
+  it('drives the Vite plugin hooks directly without a dev server', async () => {
 
 const plugin = reactivityGraph({ include: ['src/**/*.vue'], autoInject: true });
 plugin.configResolved({ root });
@@ -29,5 +31,5 @@ ok(out && /mountPanel/.test(out.code) && /loadStaticGraph/.test(out.code), 'tran
 const skip = plugin.transform('x', root + '/src/App.vue');
 ok(!skip, 'transform skips non-entry files');
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

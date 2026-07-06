@@ -1,10 +1,12 @@
+import { describe, it, expect } from 'vitest';
 // Stress + circular-reactivity checks for the tracer.
 import { ref, computed, nextTick } from 'vue';
 import { graph } from '../dist/reactivity-graph/graph.js';
 import { tracedRef, tracedComputed, tracedWatch, tracedWatchEffect } from '../dist/reactivity-graph/tracer.js';
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('scale_cycle', () => {
+it('handles scale stress and circular reactivity in the tracer', async () => {
 const idOf = (l) => [...graph.nodes.values()].find((n) => n.label === l)?.id;
 const lbl = (id) => graph.nodes.get(id)?.label;
 const hasEdge = (fromLabel, toLabel) => [...graph.edges.values()].some((e) => lbl(e.from) === fromLabel && lbl(e.to) === toLabel);
@@ -127,7 +129,7 @@ async function main() {
   await scale();
   await cyclicWatch();
   cyclicComputed();
-  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
 }
-main();
+await main();
+});
+});

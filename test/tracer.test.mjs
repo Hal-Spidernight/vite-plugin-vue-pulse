@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 // Headless verification of the runtime tracer against real Vue reactivity.
 // Vue's reactivity core runs fine in Node (no DOM needed), so we can assert
 // that edges are discovered and propagation pulses fire — without a browser.
@@ -7,8 +8,9 @@ import {
   tracedRef, tracedReactive, tracedComputed, tracedWatch, tracedWatchEffect,
 } from '../dist/reactivity-graph/tracer.js';
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('tracer', () => {
+it('discovers edges and fires propagation pulses against real Vue reactivity', async () => {
 
 /** collect graph events */
 const glows = [];
@@ -89,8 +91,7 @@ async function main() {
   ok(!pl(idOf('last'), idOf('full')), 'unchanged dep (last) does not pulse');
   // whole downstream chain lit up
   ok(['first', 'full', 'greeting', 'logEffect'].every((n) => glows.includes(idOf(n))), 'entire downstream chain glows');
-
-  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-  process.exit(fail === 0 ? 0 : 1);
 }
-main();
+await main();
+});
+});

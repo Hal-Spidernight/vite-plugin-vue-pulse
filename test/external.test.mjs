@@ -1,7 +1,10 @@
+import { describe, it, expect } from 'vitest';
 import { ref, reactive, nextTick } from 'vue';
 import { graph } from '../dist/reactivity-graph/graph.js';
 import { tracedComputed, tracedWatchPostEffect, tracedWatchSyncEffect } from '../dist/reactivity-graph/tracer.js';
-let pass=0,fail=0; const ok=(c,m)=>c?(pass++,console.log('  ✓',m)):(fail++,console.error('  ✗',m));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('external', () => {
+  it('untraced external reactives auto-register as external nodes', async () => {
 const lbl=id=>graph.nodes.get(id)?.label;
 // UNTRACED external reactives (simulating Pinia/VueUse/library state)
 const libRef = ref(10);            // not created via tracedRef
@@ -18,4 +21,5 @@ ok([...graph.nodes.values()].some(n=>n.label.includes('ext')&&n.kind==='reactive
 ok(edges.some(e=>e.startsWith('⟨ext⟩ ref')&&e.endsWith('->derived')), 'external ref -> derived edge');
 ok([...graph.nodes.values()].some(n=>n.label==='postFx'&&n.kind==='watchEffect'), 'watchPostEffect node');
 ok([...graph.nodes.values()].some(n=>n.label==='syncFx'&&n.kind==='watchEffect'), 'watchSyncEffect node');
-console.log(`\n${fail===0?'ALL PASS':'FAIL'}: ${pass}/${pass+fail}`); process.exit(fail?1:0);
+  });
+});

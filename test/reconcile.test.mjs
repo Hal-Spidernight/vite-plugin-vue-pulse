@@ -2,6 +2,7 @@
 // not duplicate. Reproduces the reported bug (3 refs + 1 anonymous watch showed as
 // 8 nodes incl. 2 watch nodes) by loading the static graph and then running the
 // traced wrappers inside a mounted component named "App".
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -18,8 +19,9 @@ const { tracedRef, tracedWatch } = await import('../dist/reactivity-graph/tracer
 const { reactivityGraphPlugin } = await import('../dist/reactivity-graph/component-plugin.js');
 const { analyzeSfc } = await import('../dist/static/analyze.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('reconcile', () => {
+it('reconciles static map and runtime traffic into one node each', async () => {
 const byLabel = (l) => [...graph.nodes.values()].filter((n) => n.label === l);
 
 // the user's exact case, as an SFC
@@ -68,6 +70,5 @@ ok(byLabel('hoge')[0]?.origin === 'runtime', 'hoge reconciled: static node confi
 ok(byLabel('hoge')[0]?.scope === 'App', 'reconciled node carries the App boundary scope');
 // the static template flag lands on the SAME node the runtime created (merged, not duplicated)
 ok(byLabel('hoge')[0]?.template === true, 'static template read flagged onto the runtime node');
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+});
+});

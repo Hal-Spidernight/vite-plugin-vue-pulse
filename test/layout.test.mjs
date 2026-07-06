@@ -4,14 +4,16 @@
 // the model-space bounding SPHERE. Also exercises the pure rotation math the camera
 // is built on (identity / round-trip / orthonormality) and the pure wheel-zoom
 // math (direction / symmetry / clamping / deltaMode), no DOM required.
+import { describe, it, expect } from 'vitest';
 import {
   createForceLayout, boundingRadius,
   mat3Identity, mat3Mul, mat3RotX, mat3RotY, mat3Orthonormalize, rotatePoint,
   applyZoom,
 } from '../dist/reactivity-graph/overlay.js';
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('layout', () => {
+  it('force layout settles in 3D and pure rotation/zoom math holds', async () => {
 
 const W = 460, H = 360;
 const layout = createForceLayout(W, H);
@@ -100,5 +102,5 @@ ok(Math.abs(applyZoom(1, 3, 1) - applyZoom(1, 48, 0)) < 1e-12, 'deltaMode 1 (lin
 // a page-scroll wheel (deltaMode 2) normalizes via the given page size
 ok(Math.abs(applyZoom(1, 1, 2, 360) - applyZoom(1, 360, 0)) < 1e-12, 'deltaMode 2 (pages) normalizes via pageSize (1 page = panel height)');
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

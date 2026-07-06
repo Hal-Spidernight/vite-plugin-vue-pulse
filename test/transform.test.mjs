@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -27,8 +28,9 @@ export { first, last, cart, fullName, total, mirror };
 const { code, changed } = transformReactivity(src, 'Demo.vue', { importPath: helpersPath });
 console.log('[transform output]\n' + code.split('\n').map(l => '  ' + l).join('\n'));
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('transform', () => {
+  it('transforms plain Vue reactivity into traced wrappers and builds the graph', async () => {
 ok(changed, 'transform reported changes');
 ok(code.includes('__RG.tracedRef(\'Ada\', "first")') || code.includes('__RG.tracedRef("Ada", "first")') || /__RG\.tracedRef\('Ada', "first"\)/.test(code), 'ref -> tracedRef with inferred label "first"');
 ok(/__RG\.tracedComputed\(.*, "fullName"\)/.test(code), 'computed -> tracedComputed label "fullName"');
@@ -54,5 +56,5 @@ ok(has('cart', 'total'), 'cart -> total');
 ok(edges.some((e) => e.startsWith('fullName->watch#')), 'fullName -> watch (source dep)');
 ok([...graph.edges.values()].some((e) => e.kind === 'write' && L(e.from).startsWith('watch#') && L(e.to) === 'mirror'), 'watch callback write: watch -> mirror');
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

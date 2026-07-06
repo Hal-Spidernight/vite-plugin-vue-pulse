@@ -1,6 +1,7 @@
 // Components as BOUNDARY + FILTER TAG: scope derivation from the deterministic
 // id, template/boundary events, scope clustering in the force layout, and the
 // overlay's per-scope filter API (headless happy-dom + canvas stub).
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -25,9 +26,10 @@ globalThis.cancelAnimationFrame = (id) => clearTimeout(id);
 const { ReactivityGraph } = await import('../dist/reactivity-graph/graph.js');
 const { createForceLayout, mountOverlay, scopeColor, boundingRadius } = await import('../dist/reactivity-graph/overlay.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
 
+describe('boundary', () => {
+  it('derives scope from the id, emits template/boundary events, clusters by scope, and exposes the per-scope filter API', async () => {
 console.log('[scope = boundary membership, derived from the id]');
 const g = new ReactivityGraph();
 ok(g.addNode('App::hoge', 'hoge', 'ref').scope === 'App', 'Comp::label id → scope "App"');
@@ -194,6 +196,5 @@ ov.canvas.dispatchEvent(wheelPaused);
 ok(!wheelPaused.defaultPrevented, 'wheel is ignored while paused (page scroll not hijacked)');
 ov.resume();
 ov.destroy();
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

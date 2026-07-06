@@ -1,6 +1,7 @@
 // Click-to-view-code: the static analyzer captures each declaration's source
 // location + snippet (NodeLoc), it survives loadStaticGraph onto the live graph,
 // and clicking a node's projected position emits onPick + shows the code.
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -22,8 +23,10 @@ const { graph } = await import('../dist/reactivity-graph/graph.js');
 const { mountOverlay } = await import('../dist/reactivity-graph/overlay.js');
 const { loadStaticGraph } = await import('../dist/reactivity-graph/index.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+
+describe('code_view', () => {
+  it('captures source location + snippet, survives loadStaticGraph, and emits onPick on click', async () => {
 const tick = (n) => new Promise((r) => { let i = 0; const go = () => (++i >= n ? r() : setTimeout(go, 0)); setTimeout(go, 0); });
 
 console.log('[static analyzer captures source location + snippet per declaration]');
@@ -109,5 +112,5 @@ await tick(5);
 ok(picks.length === 0, 'a drag does not fire a pick (click vs drag discrimination)');
 
 ov.destroy();
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});

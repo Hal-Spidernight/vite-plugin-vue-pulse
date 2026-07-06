@@ -4,6 +4,7 @@
 // against a real client mount. Uses happy-dom so Vue's runtime-dom sets up a
 // genuine render effect (which is what fires renderTracked/renderTriggered —
 // SSR does not).
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -19,8 +20,9 @@ const { graph } = await import('../dist/reactivity-graph/graph.js');
 const { tracedRef, tracedComputed } = await import('../dist/reactivity-graph/tracer.js');
 const { reactivityGraphPlugin } = await import('../dist/reactivity-graph/component-plugin.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+describe('component_render', () => {
+it('tracks render effects with components as a boundary against a real client mount', async () => {
 const nodesByLabel = (l) => [...graph.nodes.values()].filter((n) => n.label === l);
 const readEdge = (fromLabel, toLabel) => [...graph.edges.values()].some((e) =>
   e.kind === 'read' && graph.nodes.get(e.from)?.label === fromLabel && graph.nodes.get(e.to)?.label === toLabel);
@@ -76,6 +78,5 @@ console.log('  nodes:', before, '->', graph.nodes.size);
 ok(nodesByLabel('count').length === 0, 'per-component refs removed on unmount (no leak)');
 ok(![...graph.nodes.values()].some((n) => n.scope === 'CompA' || n.scope === 'CompB'), 'no CompA/CompB-scoped nodes remain → their boundaries are gone');
 ok(graph.nodes.size < before, 'graph shrank after unmount');
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+});
+});

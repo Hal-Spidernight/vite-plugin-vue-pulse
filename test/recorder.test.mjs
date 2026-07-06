@@ -1,6 +1,7 @@
 // Recording mode: capture runtime propagation as an ACYCLIC flow (DAG) per user
 // action, group by cascadeId, and export as JSON / Mermaid. Also checks the panel
 // wires a graph/record tab + recorder controls (headless happy-dom).
+import { describe, it, expect } from 'vitest';
 import { Window } from 'happy-dom';
 
 const win = new Window();
@@ -17,8 +18,10 @@ const { ReactivityGraph, graph } = await import('../dist/reactivity-graph/graph.
 const { createRecorder } = await import('../dist/reactivity-graph/recorder.js');
 const { mountPanel } = await import('../dist/reactivity-graph/index.js');
 
-let pass = 0, fail = 0;
-const ok = (c, m) => (c ? (pass++, console.log('  ✓', m)) : (fail++, console.error('  ✗', m)));
+const ok = (c, m) => expect(c, m).toBeTruthy();
+
+describe('recorder', () => {
+  it('captures cascades as acyclic sessions, exports JSON/Mermaid, and wires the panel tabs + controls', async () => {
 const sync = { schedule: (fn) => fn(), step: 0, travel: 0 }; // deterministic cascade
 
 console.log('[recorder captures one cascade as one acyclic session]');
@@ -103,6 +106,5 @@ console.log('[panel wires the graph/record tabs + recorder controls]');
   ok(/"steps"/.test(panel.panel.querySelector('textarea').value), 'switching to JSON shows JSON output');
   panel.destroy();
 }
-
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'}: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+  });
+});
