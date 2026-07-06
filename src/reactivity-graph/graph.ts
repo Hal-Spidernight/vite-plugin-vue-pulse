@@ -37,6 +37,9 @@ export class ReactivityGraph {
   lastCascade = new Map<string, number>();
   /** one user action = one ripple: collapse duplicate origin triggers within this window */
   cascadeDebounceMs = 120;
+  /** monotonic id per cascade run, stamped on its pulses so a recorder can group
+   *  one propagation into a single acyclic flow */
+  cascadeSeq = 0;
 
   subscribe(fn: (e: GraphEvent) => void): () => void {
     this.subscribers.add(fn);
@@ -134,9 +137,10 @@ export class ReactivityGraph {
     this.emit({ type: 'boundary', scope });
   }
 
-  /** Animate a propagation pulse along an edge from -> to. */
-  pulse(from: string, to: string): void {
-    this.emit({ type: 'pulse', from, to });
+  /** Animate a propagation pulse along an edge from -> to. `level`/`cascadeId` (set
+   *  by cascadeFrom) let a recorder reconstruct the propagation as one acyclic flow. */
+  pulse(from: string, to: string, level?: number, cascadeId?: number): void {
+    this.emit({ type: 'pulse', from, to, level, cascadeId });
   }
 
   /** Incoming edges of a node (deps that feed it). */
@@ -182,18 +186,21 @@ export class ReactivityGraph {
     const travel = opts.travel ?? 300; // ms for a pulse to reach the next node
     const schedule: ScheduleFn = opts.schedule ?? ((fn, ms) => { setTimeout(fn, ms); });
 
+    const cascadeId = ++this.cascadeSeq; // groups this run's pulses for the recorder
     const visited = new Set<string>([originId]);
     let frontier: string[] = [originId];
+    let level = 0;
 
     this.glow(originId); // origin lights up immediately
 
     const walkLevel = () => {
+      level++;
       const next: string[] = [];
       for (const id of frontier) {
         for (const e of this.outgoing(id)) {
-          if (visited.has(e.to)) continue; // cycle / diamond guard
+          if (visited.has(e.to)) continue; // cycle / diamond guard — keeps the flow acyclic
           visited.add(e.to);
-          this.pulse(e.from, e.to);
+          this.pulse(e.from, e.to, level, cascadeId);
           const target = e.to;
           schedule(() => this.glow(target), travel);
           next.push(target);

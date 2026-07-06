@@ -13,6 +13,8 @@ import { graph } from './graph.js';
 import { mountOverlay, KIND_STYLE, scopeColor } from './overlay.js';
 import type { OverlayHandle } from './overlay.js';
 import type { ReactivityGraphExport } from './types.js';
+import { createRecorder } from './recorder.js';
+import type { PropagationSession } from './recorder.js';
 
 export { graph, ReactivityGraph } from './graph.js';
 export * from './types.js';
@@ -21,6 +23,8 @@ export type { OverlayHandle, ForceLayout, Body } from './overlay.js';
 export * from './tracer.js';
 export { reactivityGraphPlugin } from './component-plugin.js';
 export type { ReactivityGraphPluginOptions } from './component-plugin.js';
+export { createRecorder } from './recorder.js';
+export type { RecorderHandle, PropagationSession, PropagationStep } from './recorder.js';
 
 /**
  * Pre-seed the graph with statically-analyzed nodes/edges (the "map").
@@ -61,7 +65,7 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   // auto-fit so the whole cloud snaps back into frame. (double-click does the same.)
   const recenter = document.createElement('button');
   recenter.textContent = '⟳';
-  recenter.title = '初期位置に戻す (reset view — recenter, fit, level)';
+  recenter.title = 'Reset view (recenter · fit · level)';
   recenter.style.cssText = 'margin-left:auto;background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;width:22px;height:22px;cursor:pointer;font-size:13px;line-height:1';
   bar.appendChild(recenter);
   const toggle = document.createElement('button');
@@ -72,9 +76,18 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
 
   const body = document.createElement('div');
 
+  // two tabs: "graph" (the live 3D overlay + filters) and "record" (captured
+  // propagation flows). tabBar is populated after the recorder exists.
+  const tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:6px;padding:6px 10px 0;';
+  const graphView = document.createElement('div');
+  const recordView = document.createElement('div');
+  recordView.style.display = 'none';
+  body.append(tabBar, graphView, recordView);
+
   const graphHost = document.createElement('div');
   graphHost.style.cssText = `width:100%;height:${(opts.height || 360)}px;position:relative;`;
-  body.appendChild(graphHost);
+  graphView.appendChild(graphHost);
 
   // code view: clicking a node shows where that declaration lives in source + its
   // snippet. Hidden until something is picked. Header + a scrollable <pre>.
@@ -94,13 +107,13 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
   const codePre = document.createElement('pre');
   codePre.style.cssText = 'margin:0;padding:0 10px 10px;max-height:180px;overflow:auto;font:11px/1.5 ui-monospace,monospace;color:#e2e8f0;white-space:pre;';
   codeView.append(codeHead, codePre);
-  body.appendChild(codeView);
+  graphView.appendChild(codeView);
 
   // legend doubles as a per-KIND filter: clicking a swatch shows/hides every node
   // of that kind. Populated after the overlay is created (needs `ov`).
   const legend = document.createElement('div');
   legend.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;padding:8px 10px;border-top:1px solid #1e293b;';
-  body.appendChild(legend);
+  graphView.appendChild(legend);
   panel.appendChild(body);
   document.body.appendChild(panel);
 
@@ -135,7 +148,7 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
         + `font:inherit;color:#e5e7eb;opacity:${on ? 1 : 0.4};${on ? '' : 'text-decoration:line-through;'}`;
     };
     item.innerHTML = `<i style="width:9px;height:9px;border-radius:50%;background:${s.color};display:inline-block"></i>${s.label}`;
-    item.title = `${kind} ノードの表示 / 非表示`;
+    item.title = `show / hide ${kind} nodes`;
     item.onclick = () => {
       if (hiddenKinds.has(kind)) hiddenKinds.delete(kind); else hiddenKinds.add(kind);
       ov.setKindVisible(kind, !hiddenKinds.has(kind));
@@ -177,15 +190,15 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
     b.style.cssText = 'background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;padding:2px 8px;cursor:pointer;font:11px ui-monospace,monospace;';
     return b;
   };
-  const btnAll = mkBtn('すべて', 'Show all boundaries (matching the filter)');
-  const btnNone = mkBtn('なし', 'Hide all boundaries (matching the filter)');
-  const btnInvert = mkBtn('反転', 'Invert visibility of boundaries (matching the filter)');
+  const btnAll = mkBtn('All', 'Show all boundaries (matching the filter)');
+  const btnNone = mkBtn('None', 'Hide all boundaries (matching the filter)');
+  const btnInvert = mkBtn('Invert', 'Invert visibility of boundaries (matching the filter)');
   controls.append(search, count, btnAll, btnNone, btnInvert);
 
   const chips = document.createElement('div');
   chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;max-height:96px;overflow-y:auto;';
   filterWrap.append(controls, chips);
-  body.insertBefore(filterWrap, graphHost);
+  graphView.insertBefore(filterWrap, graphHost);
 
   const chipLabel = (scope: string) => scope ? `⟨${scope}⟩` : 'global';
   const matches = (scope: string) => !query || chipLabel(scope).toLowerCase().includes(query) || scope.toLowerCase().includes(query);
@@ -256,17 +269,189 @@ export function mountPanel(opts: PanelOptions = {}): PanelHandle {
     if (e.type === 'node' || e.type === 'remove-node' || e.type === 'reset') refreshChips();
   });
 
+  // ── recording view: capture + inspect propagation flows (acyclic) ─────────
+  const rec = createRecorder(graph);
+  let selectedSession: PropagationSession | null = null;
+  let fmt: 'mermaid' | 'json' = 'mermaid';
+
+  const mkRecBtn = (text: string, title: string) => {
+    const b = document.createElement('button');
+    b.textContent = text; b.title = title;
+    b.style.cssText = 'background:#1e293b;color:#e5e7eb;border:none;border-radius:6px;padding:3px 9px;cursor:pointer;font:11px ui-monospace,monospace;';
+    return b;
+  };
+  const recSep = () => { const s = document.createElement('span'); s.style.cssText = 'width:1px;height:16px;background:#1e293b;'; return s; };
+
+  const recCtl = document.createElement('div');
+  recCtl.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border-bottom:1px solid #1e293b;';
+  const recBtn = mkRecBtn('● Rec', 'Start / stop recording');
+  const clearBtn = mkRecBtn('Clear', 'Clear all recorded flows');
+  const fmtMmd = mkRecBtn('Mermaid', 'Export as Mermaid');
+  const fmtJson = mkRecBtn('JSON', 'Export as JSON');
+  const copyBtn = mkRecBtn('Copy', 'Copy output to clipboard');
+  const dlBtn = mkRecBtn('Save', 'Save output to a file');
+  recCtl.append(recBtn, clearBtn, recSep(), fmtMmd, fmtJson, recSep(), copyBtn, dlBtn);
+
+  const hint = document.createElement('div');
+  hint.style.cssText = 'opacity:.5;padding:6px 10px;font:11px ui-monospace,monospace;';
+  hint.textContent = 'Record, then interact with your app — each user action is captured as one acyclic propagation flow.';
+
+  const sessList = document.createElement('div');
+  sessList.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:70px;overflow-y:auto;padding:4px 10px;';
+
+  const flowCanvas = document.createElement('canvas');
+  const FW = opts.width || 460, FH = 200;
+  const fdpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio) || 1, 2);
+  flowCanvas.width = FW * fdpr; flowCanvas.height = FH * fdpr;
+  flowCanvas.style.cssText = `width:${FW}px;height:${FH}px;display:block;`;
+  const fctx = flowCanvas.getContext('2d') as CanvasRenderingContext2D;
+  fctx.setTransform(fdpr, 0, 0, fdpr, 0, 0);
+
+  const out = document.createElement('textarea');
+  out.readOnly = true;
+  out.style.cssText = 'width:100%;box-sizing:border-box;height:104px;background:#0b1220;color:#e2e8f0;border:none;border-top:1px solid #1e293b;padding:8px 10px;font:11px/1.4 ui-monospace,monospace;resize:none;';
+
+  recordView.append(recCtl, hint, sessList, flowCanvas, out);
+
+  const output = (): string => {
+    if (selectedSession) return fmt === 'json'
+      ? JSON.stringify({ origin: selectedSession.origin, originLabel: selectedSession.originLabel, steps: selectedSession.steps }, null, 2)
+      : rec.toMermaid(selectedSession);
+    return fmt === 'json' ? rec.toJSON() : rec.toMermaid();
+  };
+  const updateRecBtn = () => {
+    recBtn.textContent = rec.recording ? '■ Stop' : '● Rec';
+    recBtn.style.color = rec.recording ? '#fb7185' : '#e5e7eb';
+    fmtMmd.style.opacity = fmt === 'mermaid' ? '1' : '0.5';
+    fmtJson.style.opacity = fmt === 'json' ? '1' : '0.5';
+  };
+
+  const renderSessions = () => {
+    sessList.innerHTML = '';
+    if (!rec.sessions.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'opacity:.4;font:11px ui-monospace,monospace;';
+      empty.textContent = '(no flows recorded yet)';
+      sessList.appendChild(empty);
+      return;
+    }
+    rec.sessions.forEach((s, i) => {
+      const row = document.createElement('button');
+      const on = s === selectedSession;
+      row.style.cssText = `text-align:left;background:${on ? '#1e293b' : 'transparent'};color:#e5e7eb;border:none;border-radius:4px;padding:3px 6px;cursor:pointer;font:11px ui-monospace,monospace;`;
+      const sinks = new Set(s.steps.map((st) => st.to)).size;
+      row.textContent = `#${i + 1}  ⟨${graph.nodes.get(s.origin)?.scope || 'global'}⟩ ${s.originLabel} → ${sinks} nodes · ${s.steps.length} hops`;
+      row.onclick = () => { selectedSession = s; renderRecord(); };
+      sessList.appendChild(row);
+    });
+  };
+
+  // draw the selected flow as a left→right layered DAG (level = BFS depth)
+  const drawFlow = (session: PropagationSession | null) => {
+    fctx.clearRect(0, 0, FW, FH);
+    if (!session || !session.steps.length) return;
+    const nodeLevel = new Map<string, number>([[session.origin, 0]]);
+    for (const st of session.steps) if (!nodeLevel.has(st.to)) nodeLevel.set(st.to, st.level);
+    const levels = new Map<number, string[]>();
+    for (const [id, lv] of nodeLevel) { if (!levels.has(lv)) levels.set(lv, []); levels.get(lv)!.push(id); }
+    const maxLevel = Math.max(...nodeLevel.values());
+    const colW = FW / (maxLevel + 1);
+    const pos = new Map<string, { x: number; y: number }>();
+    for (const [lv, ids] of levels) {
+      const rowH = FH / (ids.length + 1);
+      ids.forEach((id, i) => pos.set(id, { x: colW * (lv + 0.5), y: rowH * (i + 1) }));
+    }
+    for (const st of session.steps) {
+      const a = pos.get(st.from), b = pos.get(st.to);
+      if (!a || !b) continue;
+      const wr = st.kind === 'write';
+      fctx.strokeStyle = wr ? 'rgba(251,191,36,0.8)' : 'rgba(148,163,184,0.7)';
+      fctx.lineWidth = 1; fctx.setLineDash(wr ? [4, 3] : []);
+      fctx.beginPath(); fctx.moveTo(a.x, a.y); fctx.lineTo(b.x, b.y); fctx.stroke();
+      fctx.setLineDash([]);
+      const ang = Math.atan2(b.y - a.y, b.x - a.x);
+      const ex = b.x - Math.cos(ang) * 9, ey = b.y - Math.sin(ang) * 9;
+      fctx.fillStyle = wr ? 'rgba(251,191,36,0.95)' : 'rgba(148,163,184,0.95)';
+      fctx.beginPath(); fctx.moveTo(ex, ey);
+      fctx.lineTo(ex - Math.cos(ang - 0.4) * 6, ey - Math.sin(ang - 0.4) * 6);
+      fctx.lineTo(ex - Math.cos(ang + 0.4) * 6, ey - Math.sin(ang + 0.4) * 6);
+      fctx.closePath(); fctx.fill();
+    }
+    for (const [id, p] of pos) {
+      const node = graph.nodes.get(id);
+      const color = (KIND_STYLE[node?.kind as keyof typeof KIND_STYLE] || KIND_STYLE.ref).color;
+      fctx.fillStyle = color;
+      fctx.beginPath(); fctx.arc(p.x, p.y, 6, 0, Math.PI * 2); fctx.fill();
+      fctx.fillStyle = '#e5e7eb'; fctx.font = '10px ui-monospace, monospace'; fctx.textAlign = 'center';
+      fctx.fillText(node?.label || id, p.x, p.y - 10);
+    }
+  };
+
+  function renderRecord() {
+    updateRecBtn();
+    if (selectedSession && !rec.sessions.includes(selectedSession)) selectedSession = null;
+    renderSessions();
+    drawFlow(selectedSession);
+    out.value = output();
+  }
+
+  recBtn.onclick = () => { if (rec.recording) rec.stop(); else rec.start(); applyTabs(); renderRecord(); };
+  clearBtn.onclick = () => { rec.clear(); selectedSession = null; renderRecord(); };
+  fmtMmd.onclick = () => { fmt = 'mermaid'; renderRecord(); };
+  fmtJson.onclick = () => { fmt = 'json'; renderRecord(); };
+  copyBtn.onclick = () => { try { navigator.clipboard?.writeText(output()); } catch { /* clipboard blocked */ } };
+  dlBtn.onclick = () => {
+    const blob = new Blob([output()], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fmt === 'json' ? 'vue-pulse-flow.json' : 'vue-pulse-flow.mmd';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const unsubRec = rec.subscribe(() => { applyTabs(); if (tab === 'record') renderRecord(); });
+
+  // ── tabs ──────────────────────────────────────────────────────────────────
+  let tab: 'graph' | 'record' = 'graph';
+  const mkTab = (text: string, id: 'graph' | 'record') => {
+    const b = document.createElement('button');
+    b.textContent = text;
+    b.style.cssText = 'background:none;border:none;border-bottom:2px solid transparent;color:#94a3b8;padding:4px 8px;cursor:pointer;font:12px ui-monospace,monospace;';
+    b.onclick = () => setTab(id);
+    return b;
+  };
+  const tabGraph = mkTab('Graph', 'graph');
+  const tabRecord = mkTab('Record', 'record');
+  tabBar.append(tabGraph, tabRecord);
+  function applyTabs() {
+    tabGraph.style.color = tab === 'graph' ? '#fff' : '#94a3b8';
+    tabGraph.style.borderBottomColor = tab === 'graph' ? '#38bdf8' : 'transparent';
+    tabRecord.textContent = rec.recording ? '● Recording' : 'Record';
+    tabRecord.style.color = rec.recording ? '#fb7185' : (tab === 'record' ? '#fff' : '#94a3b8');
+    tabRecord.style.borderBottomColor = tab === 'record' ? '#38bdf8' : 'transparent';
+  }
+  function setTab(t: 'graph' | 'record') {
+    tab = t;
+    graphView.style.display = t === 'graph' ? 'block' : 'none';
+    recordView.style.display = t === 'record' ? 'block' : 'none';
+    applyTabs();
+    updatePause();
+    if (t === 'record') renderRecord();
+  }
+
   let collapsed = !!opts.collapsed;
+  // pause the RAF force-sim whenever the overlay isn't visible (collapsed OR on the
+  // record tab) so a hidden panel costs nothing.
+  const updatePause = () => { if (collapsed || tab === 'record') ov.pause(); else ov.resume(); };
   const apply = () => {
     body.style.display = collapsed ? 'none' : 'block';
     toggle.textContent = collapsed ? '+' : '–';
-    // stop the RAF force-sim while hidden so a collapsed panel costs nothing
-    if (collapsed) ov.pause(); else ov.resume();
+    updatePause();
   };
   toggle.onclick = () => { collapsed = !collapsed; apply(); };
   apply();
+  applyTabs();
 
-  return { panel, overlay: ov, destroy() { unsubChips(); ov.destroy(); panel.remove(); } };
+  return { panel, overlay: ov, destroy() { unsubChips(); unsubRec(); rec.destroy(); ov.destroy(); panel.remove(); } };
 }
 
 /** Escape a string for safe insertion as element text via innerHTML. */

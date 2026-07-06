@@ -66,6 +66,11 @@ export interface GraphEvent {
   to?: string;
   /** for 'boundary': the component boundary that just re-rendered */
   scope?: string;
+  /** for 'pulse': BFS depth of this hop within its cascade (1 = origin's direct dependents) */
+  level?: number;
+  /** for 'pulse': id of the propagation run (cascade) this hop belongs to — lets a
+   *  recorder group the hops of one user action into a single acyclic flow */
+  cascadeId?: number;
 }
 
 /** Serialized graph — what `ReactivityGraph.toJSON()` and the analyzers produce. */
