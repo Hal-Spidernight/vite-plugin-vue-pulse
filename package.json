@@ -1,6 +1,7 @@
 {
   "name": "vite-plugin-vue-pulse",
   "version": "0.2.3",
+  "packageManager": "pnpm@9.15.9",
   "type": "module",
   "repository": {
     "type": "git",
@@ -49,6 +50,11 @@
   "publishConfig": {
     "access": "public"
   },
+  "changelog": {
+    "templates": {
+      "commitMessage": "release: v{{newVersion}}"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -61,11 +67,12 @@
     "prepack": "npm run clean && npm run build",
     "prepublishOnly": "npm run clean && npm test",
     "pack:dry": "npm pack --dry-run",
-    "release:dry": "npm publish --dry-run",
-    "release": "npm publish",
-    "release:patch": "npm version patch -m \"release: v%s\" && npm publish && git push --follow-tags",
-    "release:minor": "npm version minor -m \"release: v%s\" && npm publish && git push --follow-tags",
-    "release:major": "npm version major -m \"release: v%s\" && npm publish && git push --follow-tags"
+    "release:dry": "pnpm publish --dry-run",
+    "changelog": "changelogen",
+    "release": "pnpm test && changelogen --release --push && pnpm publish",
+    "release:minor": "pnpm test && changelogen --release --major --push && pnpm publish",
+    "release:1.0": "pnpm test && changelogen --release -r 1.0.0 --push && pnpm publish",
+    "gh:release": "changelogen gh release"
   },
   "peerDependencies": {
     "vite": "^5.0.0 || ^6.0.0 || ^7.0.0 || ^8.0.0",
@@ -78,6 +85,7 @@
   "devDependencies": {
     "@types/node": "^26.1.0",
     "@vitejs/plugin-vue": "^5.1.0",
+    "changelogen": "^0.6.2",
     "happy-dom": "^20.10.6",
     "typescript": "^6.0.3",
     "vite": "^5.4.0",

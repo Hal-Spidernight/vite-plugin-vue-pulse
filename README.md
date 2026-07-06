@@ -157,6 +157,12 @@ Package exports: `.` (the Vite plugin), `./runtime` (browser runtime:
 `tracedRef`, `mountPanel`, `loadStaticGraph`, `reactivityGraphPlugin`), `./static`
 (the analyzer). `vue` and `vite` are peer dependencies.
 
+**Releasing:** version bumps, the `CHANGELOG.md`, git tags and the npm publish are
+driven by [changelogen](https://github.com/unjs/changelogen) from Conventional
+Commits — `pnpm changelog` previews, `pnpm release` / `pnpm release:minor` cut a
+release. See [`RELEASING.md`](./RELEASING.md) for the full flow and the pre-1.0
+version-bump rules.
+
 ## Tests
 
 - `tracer` / `computed_setter` / `scale_cycle` / `external` — runtime edge discovery, write-edges, 82-node stress + circular reactivity, external auto-register (vs real `@vue/reactivity`).
