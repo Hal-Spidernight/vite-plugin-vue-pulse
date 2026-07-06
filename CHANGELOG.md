@@ -5,6 +5,18 @@ Generated from [Conventional Commits](https://www.conventionalcommits.org) by [c
 
 > **Unreleased** — run `pnpm changelog` to preview the changes on the current branch that will land in the next release.
 
+## v0.3.4
+
+[compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.3.3...v0.3.4)
+
+### 🏡 Chore
+
+- Revert package name ([4cb1476](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/commit/4cb1476))
+
+### ❤️ Contributors
+
+- Hal <hal.spidernight@gmail.com>
+
 ## v0.3.3
 
 [compare changes](https://github.com/Hal-Spidernight/vite-plugin-vue-pulse/compare/v0.3.2...v0.3.3)
